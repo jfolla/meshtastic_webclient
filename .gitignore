@@ -1,4 +1,52 @@
+# Virtual environments
 .venv/
+venv/
+env/
+
+# Python cache/compiled files
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Logs
+*.log
+
+# Environment / secrets
 .env
+.env.*
+!.env.example
+
+# IDE / editor
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Type checker / lint cache
+.mypy_cache/
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Node (se hai frontend web)
+node_modules/
+
+# Local database / temp
+*.sqlite3
+*.db
+tmp/
+temp/
