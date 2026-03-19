@@ -1,5 +1,35 @@
 # Meshtastic Web Chat / Web Chat Meshtastic
 
+# Meshtastic Web Client
+
+Web client for interacting with a Meshtastic-connected backend through a simple browser interface.
+
+## Overview
+
+This project provides a lightweight web interface for viewing and interacting with Meshtastic-related data from a browser.
+
+It is designed to be easy to run locally on Linux and simple to publish, test, and maintain.
+
+## Features
+
+- Simple web interface
+- Python-based backend
+- Easy local setup with virtual environment
+- Optional HTTPS / SSL support
+- Runtime-generated local data files excluded from Git
+- Suitable for development, testing, and small self-hosted deployments
+
+## Project Structure
+
+```text
+.
+├── app.py
+├── templates/
+├── static/              # if present
+├── requirements.txt     # if present
+├── .gitignore
+└── README.md
+
 ## Quick Start / Avvio rapido
 
 ### English
