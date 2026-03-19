@@ -5,6 +5,7 @@ import os
 import signal
 import sqlite3
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -23,22 +24,32 @@ app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 iface = None
 iface_lock = threading.Lock()
 recent_lock = threading.Lock()
-stats_lock = threading.Lock()
-recent_messages = []
-MAX_RECENT = 300
 running = True
 channel_index = 0
+APP_MODE = ""
+APP_TARGET = ""
+MAX_RECENT = 300
+recent_messages = []
 
-STAT_KEYS = {
-    "started_at": "",
-    "rx_packets_total": 0,
-    "rx_text_messages": 0,
-    "tx_text_messages": 0,
-    "rx_relay_seen": 0,
-    "rx_multihop_seen": 0,
-    "rx_bad_text": 0,
-    "tx_failed": 0,
-    "last_packet_at": "",
+stats_lock = threading.Lock()
+stats = {
+    "messages_rx": 0,
+    "messages_tx": 0,
+    "packets_rx": 0,
+    "relay_seen": 0,
+    "multihop_seen": 0,
+    "last_packet_at": None,
+    "backend_online": False,
+    "probe_latency_ms": None,
+    "online_nodes": 0,
+    "known_nodes": 0,
+    "channel_utilization": None,
+    "air_util_tx": None,
+    "battery_level": None,
+    "voltage": None,
+    "tx_relay": None,
+    "rx_bad": None,
+    "tx_dropped": None,
 }
 
 
@@ -46,12 +57,8 @@ def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-def get_conn():
-    return sqlite3.connect(DB_PATH)
-
-
 def init_db():
-    conn = get_conn()
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
         """
@@ -66,87 +73,8 @@ def init_db():
         )
         """
     )
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS kv_stats (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        )
-        """
-    )
-    for key, default in STAT_KEYS.items():
-        cur.execute(
-            "INSERT OR IGNORE INTO kv_stats (key, value) VALUES (?, ?)",
-            (key, str(default if key != "started_at" else now_iso())),
-        )
     conn.commit()
     conn.close()
-
-
-
-def load_stats():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT key, value FROM kv_stats")
-    rows = cur.fetchall()
-    conn.close()
-    out = dict(STAT_KEYS)
-    for key, value in rows:
-        if key == "started_at":
-            out[key] = value
-        else:
-            try:
-                out[key] = int(value)
-            except ValueError:
-                out[key] = 0
-    return out
-
-
-
-def set_stat(key: str, value):
-    with stats_lock:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO kv_stats (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, str(value)),
-        )
-        conn.commit()
-        conn.close()
-
-
-
-def incr_stat(key: str, amount: int = 1):
-    with stats_lock:
-        conn = get_conn()
-        cur = conn.cursor()
-        cur.execute("SELECT value FROM kv_stats WHERE key = ?", (key,))
-        row = cur.fetchone()
-        current = 0
-        if row:
-            try:
-                current = int(row[0])
-            except ValueError:
-                current = 0
-        current += amount
-        cur.execute(
-            "INSERT INTO kv_stats (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            (key, str(current)),
-        )
-        conn.commit()
-        conn.close()
-        return current
-
-
-
-def message_count() -> int:
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM messages")
-    count = cur.fetchone()[0]
-    conn.close()
-    return count
-
 
 
 def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict] = None):
@@ -159,7 +87,7 @@ def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet
     }
     raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
 
-    conn = get_conn()
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
@@ -182,13 +110,11 @@ def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet
     return payload
 
 
-
 def decode_text(packet: dict) -> Optional[str]:
     decoded = packet.get("decoded", {})
     text = decoded.get("text")
     if text:
         return text
-
     payload = decoded.get("payload")
     if isinstance(payload, (bytes, bytearray)):
         try:
@@ -198,38 +124,73 @@ def decode_text(packet: dict) -> Optional[str]:
     return None
 
 
+def _safe_get_localstats(nodes: dict):
+    for _node_id, node in (nodes or {}).items():
+        ls = node.get("localStats") or node.get("localstats")
+        if ls:
+            return ls
+    return {}
 
-def packet_is_multihop(packet: dict) -> bool:
-    hop_start = packet.get("hopStart")
-    hop_limit = packet.get("hopLimit")
-    return isinstance(hop_start, int) and isinstance(hop_limit, int) and hop_start > hop_limit
 
+def update_runtime_stats():
+    with iface_lock:
+        my_info = getattr(iface, "myInfo", None) if iface is not None else None
+        nodes = getattr(iface, "nodes", {}) if iface is not None else {}
 
+    started = time.time()
+    backend_online = bool(my_info) or bool(nodes)
+    probe_latency_ms = round((time.time() - started) * 1000, 1)
 
-def packet_has_relay(packet: dict) -> bool:
-    relay_node = packet.get("relayNode")
-    if relay_node not in (None, "", 0):
-        return True
-    return packet_is_multihop(packet)
+    online_nodes = 0
+    known_nodes = 0
+    chan_util = None
+    air_util = None
+    batt = None
+    volt = None
 
+    for _node_id, node in (nodes or {}).items():
+        known_nodes += 1
+        if node.get("lastHeard"):
+            online_nodes += 1
+        dm = node.get("deviceMetrics") or {}
+        if chan_util is None and dm.get("channelUtilization") is not None:
+            chan_util = dm.get("channelUtilization")
+        if air_util is None and dm.get("airUtilTx") is not None:
+            air_util = dm.get("airUtilTx")
+        if batt is None and dm.get("batteryLevel") is not None:
+            batt = dm.get("batteryLevel")
+        if volt is None and dm.get("voltage") is not None:
+            volt = dm.get("voltage")
+
+    ls = _safe_get_localstats(nodes)
+
+    with stats_lock:
+        stats["backend_online"] = backend_online
+        stats["probe_latency_ms"] = probe_latency_ms
+        stats["online_nodes"] = online_nodes
+        stats["known_nodes"] = known_nodes
+        stats["channel_utilization"] = chan_util
+        stats["air_util_tx"] = air_util
+        stats["battery_level"] = batt
+        stats["voltage"] = volt
+        stats["tx_relay"] = ls.get("numTxRelay", stats.get("tx_relay")) if isinstance(ls, dict) else stats.get("tx_relay")
+        stats["rx_bad"] = ls.get("numPacketsRxBad", stats.get("rx_bad")) if isinstance(ls, dict) else stats.get("rx_bad")
+        stats["tx_dropped"] = ls.get("numTxDropped", stats.get("tx_dropped")) if isinstance(ls, dict) else stats.get("tx_dropped")
 
 
 def on_receive(packet, interface=None):
-    incr_stat("rx_packets_total")
-    set_stat("last_packet_at", now_iso())
-
-    if packet_has_relay(packet):
-        incr_stat("rx_relay_seen")
-    if packet_is_multihop(packet):
-        incr_stat("rx_multihop_seen")
-
-    decoded = packet.get("decoded", {})
-    portnum = str(decoded.get("portnum", ""))
-    if "TEXT" in portnum and not decoded.get("text"):
-        payload = decoded.get("payload")
-        if payload not in (None, b"", ""):
-            incr_stat("rx_bad_text")
-
+    with stats_lock:
+        stats["packets_rx"] += 1
+        stats["last_packet_at"] = now_iso()
+        if packet.get("relayNode") is not None:
+            stats["relay_seen"] += 1
+        if packet.get("hopStart") is not None and packet.get("hopLimit") is not None:
+            try:
+                if int(packet.get("hopStart", 0)) > int(packet.get("hopLimit", 0)):
+                    stats["multihop_seen"] += 1
+            except Exception:
+                pass
+    update_runtime_stats()
 
 
 def on_text(packet, interface=None):
@@ -238,9 +199,10 @@ def on_text(packet, interface=None):
         return
     from_id = packet.get("fromId", str(packet.get("from", "unknown")))
     to_id = packet.get("toId", str(packet.get("to", "^all")))
-    incr_stat("rx_text_messages")
+    with stats_lock:
+        stats["messages_rx"] += 1
     save_message("in", from_id, to_id, text, packet)
-
+    update_runtime_stats()
 
 
 def connect_meshtastic(mode: str, target: str):
@@ -249,7 +211,6 @@ def connect_meshtastic(mode: str, target: str):
         iface = meshtastic.serial_interface.SerialInterface(devPath=target)
     else:
         iface = meshtastic.tcp_interface.TCPInterface(hostname=target)
-
 
 
 def get_nodes():
@@ -271,89 +232,6 @@ def get_nodes():
     return out
 
 
-
-
-
-def get_health_status():
-    '''Best-effort health probe for the local Meshtastic connection.
-    This is not an RF ping; it verifies that the backend can still talk to the node.
-    '''
-    started = datetime.now()
-    ok = False
-    detail = "non raggiungibile"
-    node_num = None
-    node_name = None
-
-    try:
-        with iface_lock:
-            if iface is None:
-                raise RuntimeError("interfaccia non inizializzata")
-
-            my_info = getattr(iface, "myInfo", None)
-            nodes = getattr(iface, "nodes", {}) or {}
-            nodes_by_num = getattr(iface, "nodesByNum", {}) or {}
-
-            if isinstance(my_info, dict):
-                node_num = my_info.get("myNodeNum")
-            else:
-                node_num = getattr(my_info, "myNodeNum", None)
-
-            if node_num is not None and node_num in nodes_by_num:
-                node = nodes_by_num.get(node_num, {}) or {}
-                user = node.get("user", {}) or {}
-                node_name = user.get("longName") or user.get("shortName")
-            elif nodes:
-                first_node = next(iter(nodes.values()), {}) or {}
-                user = first_node.get("user", {}) or {}
-                node_name = user.get("longName") or user.get("shortName")
-
-            ok = bool(my_info) or bool(nodes)
-            detail = "raggiungibile" if ok else "nessuna risposta valida"
-    except Exception as e:
-        detail = str(e)
-
-    elapsed_ms = round((datetime.now() - started).total_seconds() * 1000, 1)
-    last_packet_at = load_stats().get("last_packet_at")
-    return {
-        "online": ok,
-        "probe_latency_ms": elapsed_ms,
-        "detail": detail,
-        "node_num": node_num,
-        "node_name": node_name,
-        "last_packet_at": last_packet_at,
-    }
-
-def get_local_mesh_stats():
-    with iface_lock:
-        try:
-            my_num = getattr(iface, "myInfo", {}).get("myNodeNum")
-            node = getattr(iface, "nodesByNum", {}).get(my_num, {}) if my_num is not None else {}
-            local_stats = node.get("localStats", {}) or {}
-            device_metrics = node.get("deviceMetrics", {}) or {}
-        except Exception:
-            local_stats = {}
-            device_metrics = {}
-
-    def val(key):
-        return local_stats.get(key)
-
-    return {
-        "uptime_seconds": val("uptimeSeconds"),
-        "channel_utilization": local_stats.get("channelUtilization", device_metrics.get("channelUtilization")),
-        "air_util_tx": local_stats.get("airUtilTx", device_metrics.get("airUtilTx")),
-        "num_packets_tx": val("numPacketsTx"),
-        "num_packets_rx": val("numPacketsRx"),
-        "num_packets_rx_bad": val("numPacketsRxBad"),
-        "num_tx_relay": val("numTxRelay"),
-        "num_tx_relay_canceled": val("numTxRelayCanceled"),
-        "num_tx_dropped": val("numTxDropped"),
-        "num_rx_dupe": val("numRxDupe"),
-        "num_online_nodes": val("numOnlineNodes"),
-        "num_total_nodes": val("numTotalNodes"),
-        "noise_floor": val("noiseFloor"),
-    }
-
-
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -361,18 +239,31 @@ def index():
 
 @app.route("/api/status")
 def api_status():
+    update_runtime_stats()
+    with stats_lock:
+        s = dict(stats)
     return jsonify({
         "ok": True,
         "mode": APP_MODE,
         "target": APP_TARGET,
         "channel": channel_index,
+        "backend_online": s["backend_online"],
+        "probe_latency_ms": s["probe_latency_ms"],
+        "last_packet_at": s["last_packet_at"],
     })
+
+
+@app.route("/api/stats")
+def api_stats():
+    update_runtime_stats()
+    with stats_lock:
+        return jsonify(dict(stats))
 
 
 @app.route("/api/messages")
 def api_messages():
     limit = min(int(request.args.get("limit", 100)), 500)
-    conn = get_conn()
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute(
         "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
@@ -399,29 +290,6 @@ def api_nodes():
     return jsonify(get_nodes())
 
 
-@app.route("/api/stats")
-def api_stats():
-    stored = load_stats()
-    local = get_local_mesh_stats()
-    nodes = get_nodes()
-    return jsonify(
-        {
-            "started_at": stored.get("started_at"),
-            "health": get_health_status(),
-            "stored_messages": message_count(),
-            "known_nodes": len(nodes),
-            "received_messages": stored.get("rx_text_messages", 0),
-            "sent_messages": stored.get("tx_text_messages", 0),
-            "received_packets": stored.get("rx_packets_total", 0),
-            "relayed_packets_seen": stored.get("rx_relay_seen", 0),
-            "multihop_packets_seen": stored.get("rx_multihop_seen", 0),
-            "bad_text_packets_seen": stored.get("rx_bad_text", 0),
-            "send_failures": stored.get("tx_failed", 0),
-            "local": local,
-        }
-    )
-
-
 @app.route("/api/send", methods=["POST"])
 def api_send():
     data = request.get_json(force=True, silent=True) or {}
@@ -437,18 +305,19 @@ def api_send():
                 kwargs["destinationId"] = dest
             iface.sendText(**kwargs)
         except Exception as e:
-            incr_stat("tx_failed")
             return jsonify({"ok": False, "error": str(e)}), 500
 
     to_id = dest or "^all"
-    incr_stat("tx_text_messages")
+    with stats_lock:
+        stats["messages_tx"] += 1
     msg = save_message("out", "io", to_id, text)
+    update_runtime_stats()
     return jsonify({"ok": True, "message": msg})
 
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear():
-    conn = get_conn()
+    conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
     cur.execute("DELETE FROM messages")
     conn.commit()
@@ -456,7 +325,6 @@ def api_clear():
     with recent_lock:
         recent_messages.clear()
     return jsonify({"ok": True})
-
 
 
 def stop_handler(signum, frame):
@@ -478,6 +346,7 @@ if __name__ == "__main__":
     parser.add_argument("--listen-host", default="127.0.0.1", help="Host web locale")
     parser.add_argument("--listen-port", type=int, default=8088, help="Porta web locale")
     parser.add_argument("--channel", type=int, default=0, help="Indice canale")
+    parser.add_argument("--ssl-adhoc", action="store_true", help="Abilita HTTPS con certificato self-signed adhoc di Flask")
     args = parser.parse_args()
 
     APP_MODE = "serial" if args.port else "tcp"
@@ -491,8 +360,11 @@ if __name__ == "__main__":
     pub.subscribe(on_text, "meshtastic.receive.text")
     pub.subscribe(on_receive, "meshtastic.receive")
     connect_meshtastic(APP_MODE, APP_TARGET)
+    update_runtime_stats()
 
-    print(f"Web chat pronta su http://{args.listen_host}:{args.listen_port}")
-    print(f"Backend Meshtastic: {APP_MODE} -> {APP_TARGET}")
-
-    app.run(host=args.listen_host, port=args.listen_port, debug=False, threaded=True)
+    scheme = "https" if args.ssl_adhoc else "http"
+    print(f"Web chat pronta su {scheme}://{args.listen_host}:{args.listen_port}")
+    if args.ssl_adhoc:
+        app.run(host=args.listen_host, port=args.listen_port, ssl_context="adhoc", debug=False)
+    else:
+        app.run(host=args.listen_host, port=args.listen_port, debug=False)

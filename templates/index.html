@@ -6,7 +6,7 @@
   <title>Meshtastic Web Chat</title>
   <style>
     body { font-family: system-ui, sans-serif; margin: 0; background: #111827; color: #e5e7eb; }
-    .wrap { max-width: 1220px; margin: 0 auto; padding: 16px; }
+    .wrap { max-width: 1280px; margin: 0 auto; padding: 16px; }
     .top { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
     .card { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 12px; }
     .status { font-size: 14px; color: #cbd5e1; }
@@ -17,27 +17,24 @@
     .msg.out { background: #1d4ed8; color: white; }
     .meta { font-size: 12px; opacity: .8; margin-bottom: 4px; }
     .controls { display: grid; grid-template-columns: 1fr 180px 120px; gap: 8px; margin-top: 12px; }
-    input, button, select { border-radius: 10px; border: 1px solid #475569; padding: 10px 12px; background: #0f172a; color: #e5e7eb; }
+    input, button { border-radius: 10px; border: 1px solid #475569; padding: 10px 12px; background: #0f172a; color: #e5e7eb; }
     button { cursor: pointer; background: #2563eb; border-color: #2563eb; }
     button.secondary { background: #374151; border-color: #475569; }
-    .side h3 { margin-top: 0; margin-bottom: 10px; }
-    .side section + section { margin-top: 16px; }
+    .side h3 { margin: 6px 0 10px 0; }
     .node { padding: 8px; border-bottom: 1px solid #334155; cursor: pointer; }
     .node small { display: block; color: #94a3b8; }
     .hint { color: #94a3b8; font-size: 13px; margin-top: 8px; }
-    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 10px; }
-    .stat .label { font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
-    .stat .value { font-size: 20px; font-weight: 700; }
-    .stat .sub { font-size: 12px; color: #94a3b8; margin-top: 2px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .side-section { margin-bottom: 16px; }
+    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px; }
+    .stat .label { font-size:12px; color:#94a3b8; margin-bottom:4px; }
+    .stat .value { font-weight:600; }
+    .ok { color: #86efac; }
+    .bad { color: #fca5a5; }
     @media (max-width: 900px) {
       .layout { grid-template-columns: 1fr; }
       .controls { grid-template-columns: 1fr; }
-      .stat-grid { grid-template-columns: 1fr 1fr; }
-    }
-    @media (max-width: 520px) {
-      .stat-grid { grid-template-columns: 1fr; }
+      .stats-grid { grid-template-columns: 1fr 1fr; }
     }
   </style>
 </head>
@@ -66,16 +63,31 @@
       </div>
 
       <div class="card side">
-        <section>
+        <div class="side-section">
           <h3>Statistiche</h3>
-          <div id="stats" class="stat-grid"></div>
-          <div id="statsHint" class="hint"></div>
-        </section>
-
-        <section>
+          <div class="stats-grid">
+            <div class="stat"><div class="label">Backend connesso al nodo</div><div class="value" id="st-backend">-</div></div>
+            <div class="stat"><div class="label">Ping backend</div><div class="value" id="st-ping">-</div></div>
+            <div class="stat"><div class="label">Ultimo pacchetto</div><div class="value" id="st-last">-</div></div>
+            <div class="stat"><div class="label">Messaggi ricevuti</div><div class="value" id="st-msg-rx">0</div></div>
+            <div class="stat"><div class="label">Messaggi inviati</div><div class="value" id="st-msg-tx">0</div></div>
+            <div class="stat"><div class="label">Pacchetti ricevuti</div><div class="value" id="st-pkt-rx">0</div></div>
+            <div class="stat"><div class="label">Pacchetti ruotati visti</div><div class="value" id="st-relay">0</div></div>
+            <div class="stat"><div class="label">Multi-hop visti</div><div class="value" id="st-multihop">0</div></div>
+            <div class="stat"><div class="label">Corrotti / rx bad</div><div class="value" id="st-rx-bad">-</div></div>
+            <div class="stat"><div class="label">Ruotati inviati dal nodo</div><div class="value" id="st-tx-relay">-</div></div>
+            <div class="stat"><div class="label">Persi / dropped</div><div class="value" id="st-dropped">-</div></div>
+            <div class="stat"><div class="label">Nodi noti / online</div><div class="value" id="st-nodes">0 / 0</div></div>
+            <div class="stat"><div class="label">Utilizzo canale</div><div class="value" id="st-chan">-</div></div>
+            <div class="stat"><div class="label">Air util TX</div><div class="value" id="st-air">-</div></div>
+            <div class="stat"><div class="label">Batteria</div><div class="value" id="st-batt">-</div></div>
+            <div class="stat"><div class="label">Tensione</div><div class="value" id="st-volt">-</div></div>
+          </div>
+        </div>
+        <div class="side-section">
           <h3>Nodi</h3>
           <div id="nodes"></div>
-        </section>
+        </div>
       </div>
     </div>
   </div>
@@ -84,8 +96,6 @@
     const messagesEl = document.getElementById('messages');
     const nodesEl = document.getElementById('nodes');
     const statusEl = document.getElementById('status');
-    const statsEl = document.getElementById('stats');
-    const statsHintEl = document.getElementById('statsHint');
     const messageInput = document.getElementById('messageInput');
     const destInput = document.getElementById('destInput');
     let lastRender = '';
@@ -99,23 +109,38 @@
         .replaceAll("'", '&#039;');
     }
 
-    function fmtValue(v) {
-      return (v === null || v === undefined || v === '') ? 'n.d.' : String(v);
-    }
-
-    function statCard(label, value, sub = '') {
-      return `
-        <div class="stat">
-          <div class="label">${escapeHtml(label)}</div>
-          <div class="value mono">${escapeHtml(fmtValue(value))}</div>
-          <div class="sub">${escapeHtml(sub)}</div>
-        </div>`;
+    function setText(id, value, cls='') {
+      const el = document.getElementById(id);
+      if (!el) return;
+      el.className = 'value ' + cls;
+      el.textContent = value;
     }
 
     async function loadStatus() {
       const res = await fetch('/api/status');
       const data = await res.json();
       statusEl.textContent = `Backend ${data.mode} → ${data.target} · canale ${data.channel}`;
+    }
+
+    async function loadStats() {
+      const res = await fetch('/api/stats');
+      const s = await res.json();
+      setText('st-backend', s.backend_online ? 'SI' : 'NO', s.backend_online ? 'ok' : 'bad');
+      setText('st-ping', s.probe_latency_ms != null ? `${s.probe_latency_ms} ms` : '-');
+      setText('st-last', s.last_packet_at || '-');
+      setText('st-msg-rx', s.messages_rx ?? 0);
+      setText('st-msg-tx', s.messages_tx ?? 0);
+      setText('st-pkt-rx', s.packets_rx ?? 0);
+      setText('st-relay', s.relay_seen ?? 0);
+      setText('st-multihop', s.multihop_seen ?? 0);
+      setText('st-rx-bad', s.rx_bad ?? '-');
+      setText('st-tx-relay', s.tx_relay ?? '-');
+      setText('st-dropped', s.tx_dropped ?? '-');
+      setText('st-nodes', `${s.known_nodes ?? 0} / ${s.online_nodes ?? 0}`);
+      setText('st-chan', s.channel_utilization != null ? `${s.channel_utilization}` : '-');
+      setText('st-air', s.air_util_tx != null ? `${s.air_util_tx}` : '-');
+      setText('st-batt', s.battery_level != null ? `${s.battery_level}%` : '-');
+      setText('st-volt', s.voltage != null ? `${s.voltage} V` : '-');
     }
 
     async function loadMessages() {
@@ -129,7 +154,6 @@
             <div>${escapeHtml(msg.text)}</div>
           </div>`;
       }).join('');
-
       if (rendered !== lastRender) {
         messagesEl.innerHTML = rendered;
         messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -146,7 +170,6 @@
           <small>${escapeHtml(node.node_id)} · ${escapeHtml(node.hw_model || '')}</small>
         </div>
       `).join('') || '<div class="hint">Nessun nodo noto</div>';
-
       document.querySelectorAll('.node').forEach(el => {
         el.addEventListener('click', () => {
           destInput.value = el.dataset.id;
@@ -155,38 +178,10 @@
       });
     }
 
-    async function loadStats() {
-      const res = await fetch('/api/stats');
-      const data = await res.json();
-      const local = data.local || {};
-
-      statsEl.innerHTML = [
-        statCard('Backend connesso al nodo', data.health?.online ? 'SI' : 'NO', data.health?.detail || 'stato backend'),
-        statCard('Ping backend', data.health?.probe_latency_ms, 'ms, controllo backend→nodo'),
-        statCard('Ultimo pacchetto', data.health?.last_packet_at || 'n.d.', 'ultimo pacchetto visto dal backend'),
-        statCard('Messaggi ricevuti', data.received_messages, 'testo ricevuto e salvato'),
-        statCard('Messaggi inviati', data.sent_messages, 'testo inviato dalla web app'),
-        statCard('Pacchetti ricevuti', data.received_packets, 'tutti i pacchetti visti dal backend'),
-        statCard('Pacchetti ruotati visti', data.relayed_packets_seen, 'pacchetti con relay / multi-hop'),
-        statCard('Multi-hop visti', data.multihop_packets_seen, 'hopStart > hopLimit'),
-        statCard('Corrotti / rx bad', local.num_packets_rx_bad ?? data.bad_text_packets_seen, 'usa localStats se disponibili'),
-        statCard('Ruotati inviati dal nodo', local.num_tx_relay, 'numTxRelay del nodo locale'),
-        statCard('Persi / dropped', local.num_tx_dropped ?? data.send_failures, 'numTxDropped o errori invio web'),
-        statCard('Nodi noti', local.num_total_nodes ?? data.known_nodes, 'totale visto dal backend'),
-        statCard('Nodi online', local.num_online_nodes, 'da localStats del nodo'),
-        statCard('Utilizzo canale', local.channel_utilization, 'telemetria locale'),
-        statCard('Air util TX', local.air_util_tx, 'telemetria locale')
-      ].join('');
-
-      const started = data.started_at ? `backend avviato: ${data.started_at}` : 'backend avviato: n.d.';
-      statsHintEl.textContent = `${started}. Il campo Backend connesso al nodo verifica che il backend riesca ancora a parlare col nodo. Ping backend non è un ping RF o ICMP.`;
-    }
-
     async function sendMessage() {
       const text = messageInput.value.trim();
       const dest = destInput.value.trim();
       if (!text) return;
-
       const res = await fetch('/api/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -205,15 +200,14 @@
     async function clearHistory() {
       await fetch('/api/clear', { method: 'POST' });
       await loadMessages();
-      await loadStats();
     }
 
     document.getElementById('sendBtn').addEventListener('click', sendMessage);
     document.getElementById('refreshBtn').addEventListener('click', async () => {
       await loadStatus();
+      await loadStats();
       await loadNodes();
       await loadMessages();
-      await loadStats();
     });
     document.getElementById('clearBtn').addEventListener('click', clearHistory);
     messageInput.addEventListener('keydown', (e) => {
@@ -222,14 +216,14 @@
 
     async function boot() {
       await loadStatus();
+      await loadStats();
       await loadNodes();
       await loadMessages();
-      await loadStats();
       setInterval(loadMessages, 2000);
       setInterval(loadNodes, 10000);
-      setInterval(loadStats, 3000);
+      setInterval(loadStats, 4000);
+      setInterval(loadStatus, 8000);
     }
-
     boot();
   </script>
 </body>
