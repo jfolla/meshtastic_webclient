@@ -50,3 +50,6 @@ node_modules/
 *.db
 tmp/
 temp/
+
+# Runtime logs
+messages.jsonl
