@@ -1,5 +1,3 @@
-Meshtastic Web Chat v0.4.0
+Meshtastic Web Chat v0.4.3
 
-Primary documentation: README.md
-Folder: meshtastic_webchat
-Service: meshtastic-webchat.service
+Please read README.md for the full installation and usage guide.

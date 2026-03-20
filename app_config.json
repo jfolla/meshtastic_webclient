@@ -1,5 +1,5 @@
 {
-  "version": "0.4.0",
+  "version": "0.4.3",
   "node": {
     "mode": "serial",
     "host": "",
@@ -10,8 +10,5 @@
     "listen_host": "0.0.0.0",
     "listen_port": 8088,
     "ssl_adhoc": true
-  },
-  "ui": {
-    "default_language": "it"
   }
 }
