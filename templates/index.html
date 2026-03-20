@@ -1,230 +1,127 @@
 <!doctype html>
-<html lang="it">
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Meshtastic Web Chat</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #111827; color: #e5e7eb; }
-    .wrap { max-width: 1280px; margin: 0 auto; padding: 16px; }
-    .top { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
-    .card { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 12px; }
-    .status { font-size: 14px; color: #cbd5e1; }
-    .layout { display: grid; grid-template-columns: 1fr 340px; gap: 16px; }
-    .messages { height: 60vh; overflow-y: auto; padding: 12px; }
-    .msg { padding: 8px 10px; border-radius: 10px; margin-bottom: 10px; white-space: pre-wrap; }
-    .msg.in { background: #0f172a; }
-    .msg.out { background: #1d4ed8; color: white; }
-    .meta { font-size: 12px; opacity: .8; margin-bottom: 4px; }
-    .controls { display: grid; grid-template-columns: 1fr 180px 120px; gap: 8px; margin-top: 12px; }
-    input, button { border-radius: 10px; border: 1px solid #475569; padding: 10px 12px; background: #0f172a; color: #e5e7eb; }
-    button { cursor: pointer; background: #2563eb; border-color: #2563eb; }
-    button.secondary { background: #374151; border-color: #475569; }
-    .side h3 { margin: 6px 0 10px 0; }
-    .node { padding: 8px; border-bottom: 1px solid #334155; cursor: pointer; }
-    .node small { display: block; color: #94a3b8; }
-    .hint { color: #94a3b8; font-size: 13px; margin-top: 8px; }
-    .side-section { margin-bottom: 16px; }
-    .stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .stat { background:#111827; border:1px solid #334155; border-radius:10px; padding:10px; }
-    .stat .label { font-size:12px; color:#94a3b8; margin-bottom:4px; }
-    .stat .value { font-weight:600; }
-    .ok { color: #86efac; }
-    .bad { color: #fca5a5; }
-    @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; }
-      .controls { grid-template-columns: 1fr; }
-      .stats-grid { grid-template-columns: 1fr 1fr; }
-    }
+    :root { --bg:#0b1020; --card:#121a30; --muted:#9fb0d0; --text:#edf2ff; --accent:#4da3ff; --border:#243253; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; background:var(--bg); color:var(--text); }
+    .topbar { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid var(--border); position:sticky; top:0; background:rgba(11,16,32,.97); }
+    .title { font-size:20px; font-weight:700; }
+    .sub { color:var(--muted); font-size:12px; }
+    .lang { display:flex; gap:8px; align-items:center; }
+    select, button, input { background:#0e1730; color:var(--text); border:1px solid var(--border); border-radius:8px; padding:10px; }
+    button { cursor:pointer; }
+    .wrap { display:grid; grid-template-columns:1fr 320px; gap:16px; padding:16px; }
+    .card { background:var(--card); border:1px solid var(--border); border-radius:12px; padding:14px; }
+    .messages { height:68vh; overflow:auto; display:flex; flex-direction:column; gap:10px; }
+    .msg { border:1px solid var(--border); border-radius:10px; padding:10px; }
+    .msg.out { border-color:#2f5f91; background:#10203c; }
+    .meta { font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .composer { display:grid; grid-template-columns:1fr 160px 120px; gap:10px; margin-top:12px; }
+    .sidebar { display:flex; flex-direction:column; gap:16px; }
+    .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .stat { background:#0e1730; border:1px solid var(--border); border-radius:10px; padding:10px; }
+    .label { color:var(--muted); font-size:12px; }
+    .value { font-weight:700; font-size:16px; margin-top:4px; }
+    .status.ok { color:#63d471; }
+    .status.bad { color:#ff8080; }
+    ul { list-style:none; padding:0; margin:0; }
+    li { padding:8px 0; border-bottom:1px solid rgba(255,255,255,.06); }
+    @media (max-width: 980px){ .wrap{grid-template-columns:1fr;} .composer{grid-template-columns:1fr;} .messages{height:50vh;} }
   </style>
 </head>
 <body>
+  <div class="topbar">
+    <div>
+      <div class="title" data-i18n="title">Meshtastic Web Chat</div>
+      <div class="sub">v{{ version }}</div>
+    </div>
+    <div class="lang">
+      <label for="langSel" data-i18n="language">Language</label>
+      <select id="langSel">
+        <option value="it">Italiano</option>
+        <option value="en">English</option>
+      </select>
+    </div>
+  </div>
   <div class="wrap">
-    <div class="top">
-      <div class="card" style="flex:1 1 320px;">
-        <div><strong>Meshtastic Web Chat</strong></div>
-        <div id="status" class="status">Caricamento…</div>
-      </div>
-      <div class="card">
-        <button class="secondary" id="refreshBtn">Aggiorna</button>
-        <button class="secondary" id="clearBtn">Pulisci storico</button>
+    <div class="card">
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <input id="msgText" placeholder="Type a message">
+        <input id="msgDest" placeholder="Optional destination !nodeid">
+        <button id="sendBtn" data-i18n="send">Send</button>
       </div>
     </div>
-
-    <div class="layout">
+    <div class="sidebar">
       <div class="card">
-        <div id="messages" class="messages"></div>
-        <div class="controls">
-          <input id="messageInput" type="text" placeholder="Scrivi un messaggio…">
-          <input id="destInput" type="text" placeholder="Dest opzionale, es. !9ee783b4">
-          <button id="sendBtn">Invia</button>
+        <div style="font-weight:700;margin-bottom:10px" data-i18n="connection">Connection</div>
+        <div class="grid">
+          <div class="stat"><div class="label" data-i18n="backend_connected">Backend connected to node</div><div class="value status" id="backendConnected">-</div></div>
+          <div class="stat"><div class="label" data-i18n="detail">Detail</div><div class="value" id="connDetail">-</div></div>
+          <div class="stat"><div class="label" data-i18n="last_packet">Last packet</div><div class="value" id="lastPacket">-</div></div>
+          <div class="stat"><div class="label" data-i18n="last_error">Last error</div><div class="value" id="lastError">-</div></div>
         </div>
-        <div class="hint">Lascia il campo destinatario vuoto per inviare in broadcast sul canale corrente.</div>
       </div>
-
-      <div class="card side">
-        <div class="side-section">
-          <h3>Statistiche</h3>
-          <div class="stats-grid">
-            <div class="stat"><div class="label">Backend connesso al nodo</div><div class="value" id="st-backend">-</div></div>
-            <div class="stat"><div class="label">Ping backend</div><div class="value" id="st-ping">-</div></div>
-            <div class="stat"><div class="label">Ultimo pacchetto</div><div class="value" id="st-last">-</div></div>
-            <div class="stat"><div class="label">Messaggi ricevuti</div><div class="value" id="st-msg-rx">0</div></div>
-            <div class="stat"><div class="label">Messaggi inviati</div><div class="value" id="st-msg-tx">0</div></div>
-            <div class="stat"><div class="label">Pacchetti ricevuti</div><div class="value" id="st-pkt-rx">0</div></div>
-            <div class="stat"><div class="label">Pacchetti ruotati visti</div><div class="value" id="st-relay">0</div></div>
-            <div class="stat"><div class="label">Multi-hop visti</div><div class="value" id="st-multihop">0</div></div>
-            <div class="stat"><div class="label">Corrotti / rx bad</div><div class="value" id="st-rx-bad">-</div></div>
-            <div class="stat"><div class="label">Ruotati inviati dal nodo</div><div class="value" id="st-tx-relay">-</div></div>
-            <div class="stat"><div class="label">Persi / dropped</div><div class="value" id="st-dropped">-</div></div>
-            <div class="stat"><div class="label">Nodi noti / online</div><div class="value" id="st-nodes">0 / 0</div></div>
-            <div class="stat"><div class="label">Utilizzo canale</div><div class="value" id="st-chan">-</div></div>
-            <div class="stat"><div class="label">Air util TX</div><div class="value" id="st-air">-</div></div>
-            <div class="stat"><div class="label">Batteria</div><div class="value" id="st-batt">-</div></div>
-            <div class="stat"><div class="label">Tensione</div><div class="value" id="st-volt">-</div></div>
-          </div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:10px" data-i18n="statistics">Statistics</div>
+        <div class="grid">
+          <div class="stat"><div class="label" data-i18n="messages_rx">Messages received</div><div class="value" id="messagesRx">0</div></div>
+          <div class="stat"><div class="label" data-i18n="messages_tx">Messages sent</div><div class="value" id="messagesTx">0</div></div>
+          <div class="stat"><div class="label" data-i18n="packets_rx">Packets seen</div><div class="value" id="packetsRx">0</div></div>
+          <div class="stat"><div class="label" data-i18n="relay_seen">Relayed seen</div><div class="value" id="relaySeen">0</div></div>
+          <div class="stat"><div class="label" data-i18n="multi_hop">Multi-hop seen</div><div class="value" id="multiHop">0</div></div>
+          <div class="stat"><div class="label" data-i18n="nodes_known">Known nodes</div><div class="value" id="nodesKnown">0</div></div>
+          <div class="stat"><div class="label" data-i18n="online_nodes">Online nodes</div><div class="value" id="onlineNodes">-</div></div>
+          <div class="stat"><div class="label" data-i18n="battery">Battery</div><div class="value" id="battery">-</div></div>
+          <div class="stat"><div class="label" data-i18n="voltage">Voltage</div><div class="value" id="voltage">-</div></div>
+          <div class="stat"><div class="label" data-i18n="channel_utilization">Channel util.</div><div class="value" id="channelUtil">-</div></div>
+          <div class="stat"><div class="label" data-i18n="air_util_tx">Air util TX</div><div class="value" id="airUtilTx">-</div></div>
         </div>
-        <div class="side-section">
-          <h3>Nodi</h3>
-          <div id="nodes"></div>
-        </div>
+      </div>
+      <div class="card">
+        <div style="font-weight:700;margin-bottom:10px" data-i18n="nodes">Nodes</div>
+        <ul id="nodesList"></ul>
       </div>
     </div>
   </div>
+<script>
+const I18N = {
+  it: {title:'Meshtastic Web Chat', language:'Lingua', send:'Invia', connection:'Connessione', backend_connected:'Backend connesso al nodo', detail:'Dettaglio', last_packet:'Ultimo pacchetto', last_error:'Ultimo errore', statistics:'Statistiche', messages_rx:'Messaggi ricevuti', messages_tx:'Messaggi inviati', packets_rx:'Pacchetti visti', relay_seen:'Relay visti', multi_hop:'Multi-hop visti', nodes_known:'Nodi noti', online_nodes:'Nodi online', battery:'Batteria', voltage:'Tensione', channel_utilization:'Utilizzo canale', air_util_tx:'Air util TX', nodes:'Nodi', yes:'SI', no:'NO', unknown:'sconosciuto', empty:'Nessun messaggio'},
+  en: {title:'Meshtastic Web Chat', language:'Language', send:'Send', connection:'Connection', backend_connected:'Backend connected to node', detail:'Detail', last_packet:'Last packet', last_error:'Last error', statistics:'Statistics', messages_rx:'Messages received', messages_tx:'Messages sent', packets_rx:'Packets seen', relay_seen:'Relayed seen', multi_hop:'Multi-hop seen', nodes_known:'Known nodes', online_nodes:'Online nodes', battery:'Battery', voltage:'Voltage', channel_utilization:'Channel util.', air_util_tx:'Air util TX', nodes:'Nodes', yes:'YES', no:'NO', unknown:'unknown', empty:'No messages'}
+};
+let currentLang = localStorage.getItem('lang') || ((navigator.language||'en').startsWith('it') ? 'it':'en');
+function t(k){ return (I18N[currentLang]||I18N.en)[k] || k; }
+function applyI18n(){
+  document.querySelectorAll('[data-i18n]').forEach(el=>el.textContent=t(el.dataset.i18n));
+  document.getElementById('langSel').value=currentLang;
+  document.getElementById('msgText').placeholder = currentLang==='it' ? 'Scrivi un messaggio' : 'Type a message';
+  document.getElementById('msgDest').placeholder = currentLang==='it' ? 'Destinazione opzionale !nodeid' : 'Optional destination !nodeid';
+}
+document.getElementById('langSel').addEventListener('change', e=>{ currentLang=e.target.value; localStorage.setItem('lang', currentLang); applyI18n(); });
+applyI18n();
 
-  <script>
-    const messagesEl = document.getElementById('messages');
-    const nodesEl = document.getElementById('nodes');
-    const statusEl = document.getElementById('status');
-    const messageInput = document.getElementById('messageInput');
-    const destInput = document.getElementById('destInput');
-    let lastRender = '';
-
-    function escapeHtml(str) {
-      return String(str)
-        .replaceAll('&', '&amp;')
-        .replaceAll('<', '&lt;')
-        .replaceAll('>', '&gt;')
-        .replaceAll('"', '&quot;')
-        .replaceAll("'", '&#039;');
-    }
-
-    function setText(id, value, cls='') {
-      const el = document.getElementById(id);
-      if (!el) return;
-      el.className = 'value ' + cls;
-      el.textContent = value;
-    }
-
-    async function loadStatus() {
-      const res = await fetch('/api/status');
-      const data = await res.json();
-      statusEl.textContent = `Backend ${data.mode} → ${data.target} · canale ${data.channel}`;
-    }
-
-    async function loadStats() {
-      const res = await fetch('/api/stats');
-      const s = await res.json();
-      setText('st-backend', s.backend_online ? 'SI' : 'NO', s.backend_online ? 'ok' : 'bad');
-      setText('st-ping', s.probe_latency_ms != null ? `${s.probe_latency_ms} ms` : '-');
-      setText('st-last', s.last_packet_at || '-');
-      setText('st-msg-rx', s.messages_rx ?? 0);
-      setText('st-msg-tx', s.messages_tx ?? 0);
-      setText('st-pkt-rx', s.packets_rx ?? 0);
-      setText('st-relay', s.relay_seen ?? 0);
-      setText('st-multihop', s.multihop_seen ?? 0);
-      setText('st-rx-bad', s.rx_bad ?? '-');
-      setText('st-tx-relay', s.tx_relay ?? '-');
-      setText('st-dropped', s.tx_dropped ?? '-');
-      setText('st-nodes', `${s.known_nodes ?? 0} / ${s.online_nodes ?? 0}`);
-      setText('st-chan', s.channel_utilization != null ? `${s.channel_utilization}` : '-');
-      setText('st-air', s.air_util_tx != null ? `${s.air_util_tx}` : '-');
-      setText('st-batt', s.battery_level != null ? `${s.battery_level}%` : '-');
-      setText('st-volt', s.voltage != null ? `${s.voltage} V` : '-');
-    }
-
-    async function loadMessages() {
-      const res = await fetch('/api/messages?limit=200');
-      const data = await res.json();
-      const rendered = data.map(msg => {
-        const cls = msg.direction === 'out' ? 'out' : 'in';
-        return `
-          <div class="msg ${cls}">
-            <div class="meta">${escapeHtml(msg.ts)} · ${escapeHtml(msg.from_id || '')} → ${escapeHtml(msg.to_id || '')}</div>
-            <div>${escapeHtml(msg.text)}</div>
-          </div>`;
-      }).join('');
-      if (rendered !== lastRender) {
-        messagesEl.innerHTML = rendered;
-        messagesEl.scrollTop = messagesEl.scrollHeight;
-        lastRender = rendered;
-      }
-    }
-
-    async function loadNodes() {
-      const res = await fetch('/api/nodes');
-      const data = await res.json();
-      nodesEl.innerHTML = data.map(node => `
-        <div class="node" data-id="${escapeHtml(node.node_id)}">
-          <strong>${escapeHtml(node.name)}</strong>
-          <small>${escapeHtml(node.node_id)} · ${escapeHtml(node.hw_model || '')}</small>
-        </div>
-      `).join('') || '<div class="hint">Nessun nodo noto</div>';
-      document.querySelectorAll('.node').forEach(el => {
-        el.addEventListener('click', () => {
-          destInput.value = el.dataset.id;
-          messageInput.focus();
-        });
-      });
-    }
-
-    async function sendMessage() {
-      const text = messageInput.value.trim();
-      const dest = destInput.value.trim();
-      if (!text) return;
-      const res = await fetch('/api/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text, dest })
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        alert(data.error || 'Errore invio');
-        return;
-      }
-      messageInput.value = '';
-      await loadMessages();
-      await loadStats();
-    }
-
-    async function clearHistory() {
-      await fetch('/api/clear', { method: 'POST' });
-      await loadMessages();
-    }
-
-    document.getElementById('sendBtn').addEventListener('click', sendMessage);
-    document.getElementById('refreshBtn').addEventListener('click', async () => {
-      await loadStatus();
-      await loadStats();
-      await loadNodes();
-      await loadMessages();
-    });
-    document.getElementById('clearBtn').addEventListener('click', clearHistory);
-    messageInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') sendMessage();
-    });
-
-    async function boot() {
-      await loadStatus();
-      await loadStats();
-      await loadNodes();
-      await loadMessages();
-      setInterval(loadMessages, 2000);
-      setInterval(loadNodes, 10000);
-      setInterval(loadStats, 4000);
-      setInterval(loadStatus, 8000);
-    }
-    boot();
-  </script>
+function esc(s){ return (s ?? '').toString().replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+async function api(path, opts={}){ const r = await fetch(path, opts); if(!r.ok) throw new Error(await r.text()); return await r.json(); }
+function renderMessages(items){ const box=document.getElementById('messages'); box.innerHTML=''; if(!items.length){ box.innerHTML=`<div class="meta">${t('empty')}</div>`; return; } items.forEach(m=>{ const div=document.createElement('div'); div.className='msg '+(m.direction==='out'?'out':'in'); div.innerHTML=`<div class="meta">${esc(m.ts)} · ${esc(m.from_id||'')} → ${esc(m.to_id||'')}</div><div>${esc(m.text)}</div>`; box.appendChild(div); }); box.scrollTop=box.scrollHeight; }
+function renderNodes(items){ const ul=document.getElementById('nodesList'); ul.innerHTML=''; items.forEach(n=>{ const li=document.createElement('li'); li.innerHTML=`<strong>${esc(n.name)}</strong><br><span class="sub">${esc(n.node_id)} ${esc(n.hw_model||'')}</span>`; ul.appendChild(li); }); }
+function setValue(id, value){ document.getElementById(id).textContent = value ?? '-'; }
+async function refresh(){
+  try {
+    const [messages, nodes, stats, health] = await Promise.all([api('/api/messages?limit=100'), api('/api/nodes'), api('/api/stats'), api('/api/health')]);
+    renderMessages(messages); renderNodes(nodes);
+    const conn = document.getElementById('backendConnected'); conn.textContent = health.backend_connected ? t('yes') : t('no'); conn.className='value status '+(health.backend_connected?'ok':'bad');
+    setValue('connDetail', health.connection_detail || '-'); setValue('lastPacket', health.last_packet_at || '-'); setValue('lastError', health.last_error || '-');
+    setValue('messagesRx', stats.messages_rx); setValue('messagesTx', stats.messages_tx); setValue('packetsRx', stats.packets_rx_seen); setValue('relaySeen', stats.relay_seen); setValue('multiHop', stats.multi_hop_seen);
+    setValue('nodesKnown', stats.nodes_known); setValue('onlineNodes', stats.online_nodes); setValue('battery', stats.battery_level); setValue('voltage', stats.voltage);
+    setValue('channelUtil', stats.channel_utilization); setValue('airUtilTx', stats.air_util_tx);
+  } catch (e) { console.error(e); }
+}
+document.getElementById('sendBtn').addEventListener('click', async ()=>{ const text=document.getElementById('msgText').value.trim(); const dest=document.getElementById('msgDest').value.trim(); if(!text) return; try { await api('/api/send', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({text, dest})}); document.getElementById('msgText').value=''; await refresh(); } catch(e){ alert(e); } });
+setInterval(refresh, 4000); refresh();
+</script>
 </body>
 </html>
