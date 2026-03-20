@@ -1,309 +1,372 @@
-# Meshtastic Web Chat v0.3.2
+# Meshtastic Web Chat v0.3.3
 
-**Package version:** `v0.3.2`  
 **Internal folder path:** `meshtastic_webchat`  
 **Service name:** `meshtastic-webchat.service`
 
+---
+
 ## English
 
-### Overview
-Meshtastic Web Chat is a lightweight browser UI for a Meshtastic node.
+### What this project is
+Meshtastic Web Chat is a lightweight local web interface for a single Meshtastic node.
 
-This release uses a **single-service / single-path** layout:
-- one application path: `meshtastic_webchat`
-- one service: `meshtastic-webchat.service`
-- one main process: `app.py`
+It runs as **one service** and **one path**:
+- folder: `meshtastic_webchat`
+- service: `meshtastic-webchat.service`
 
-The application can connect to a node in two ways:
-- **TCP node**: `--node-host 192.168.0.18`
-- **Serial node**: `--node-port /dev/ttyUSB0`
+You can connect it either:
+- to a **serial node** with `--node-port /dev/ttyUSB0`
+- to a **network node** with `--node-host 192.168.x.x`
 
-It also supports:
-- optional HTTPS with `--ssl-adhoc`
-- English / Italian UI switch
-- right sidebar statistics
-- auto-reconnect loop for the Meshtastic connection
-- cached HTTP responses to reduce UI blocking
+### Integrated gateway / proxy function
+This release keeps everything in **one process**, but the application still acts like an **integrated gateway**.
 
----
+That means:
+- the browser never talks directly to the Meshtastic node
+- the backend owns the **single direct connection** to the node
+- the browser only talks to Flask/HTTP locally
 
-### Why the built-in proxy/gateway function exists
-Even though this package runs as a **single process**, it also acts as a **connection owner / gateway** between the browser and the real Meshtastic node.
+This helps because Meshtastic TCP/network nodes can become unstable when multiple clients connect directly at the same time. Keeping a single owner connection in the backend improves stability and makes the browser UI safer.
 
-In practice, the webchat behaves like a small local proxy:
-- the browser talks only to the web application
-- the web application keeps the Meshtastic connection
-- the Meshtastic node sees only **one direct client**
+### What it helps with
+The integrated gateway approach helps to:
+- reduce direct multi-client pressure on TCP/network nodes
+- keep the web UI responsive even if the node reconnects
+- isolate browser requests from the Meshtastic connection
+- keep local history and statistics available through cached data
 
-This matters because some Meshtastic TCP/network nodes can become unstable when **multiple direct clients** connect at the same time.
-Typical examples are:
-- Android app connected directly to the same node
-- CLI connected directly with `--host`
-- browser/web backend connected directly too
+### Supported UI languages
+The interface supports:
+- Italian
+- English
+- French
 
-When that happens, direct TCP sessions can interfere with each other.
+Language selection is available from the top-right menu and is saved in the browser with `localStorage`.
 
-#### What the proxy/gateway function helps with
-The built-in gateway model helps to:
-- reduce direct multi-client conflicts against the node
-- keep a **single owner** of the Meshtastic connection
-- expose a stable web UI to multiple browsers
-- keep cached state even when the node connection drops temporarily
-- reconnect automatically in background without killing the web UI
-- avoid calling the node directly during every HTTP request
+### Main features
+- browser-based chat UI
+- local SQLite message history
+- JSONL append-only log
+- known node list
+- right sidebar with statistics
+- integrated gateway behavior
+- reconnect loop for Meshtastic backend
+- optional HTTPS with Flask adhoc SSL
 
-#### What it does **not** do
-This is **not** yet a full standalone Meshtastic virtual-node proxy for the official mobile app.
-It is a web application with an internal single-owner gateway role.
+### Requirements
+Recommended:
+- Linux
+- Python 3.10+
+- one Meshtastic node reachable by serial or IP
+- a virtual environment
 
-So:
-- **yes**: multiple browsers can use the webchat
-- **yes**: the webchat tries to shield the UI from TCP hiccups
-- **no**: it is not a complete multi-client Meshtastic protocol proxy for Android/iOS app compatibility
-
----
-
-### Recommended usage model
-For best stability:
-- let **Meshtastic Web Chat** be the only direct client connected to the node
-- do **not** connect the Android app directly to the same TCP node at the same time
-- do **not** use CLI `--host` to the same node while the webchat is running
-- if using serial, make sure nothing else owns the serial port
-
-Good model:
-
-`Browser(s) -> Web Chat -> Meshtastic node`
-
-Less stable model:
-
-`Browser + Android app + CLI -> same Meshtastic TCP node`
-
----
+Python packages:
+- `flask`
+- `meshtastic`
+- `pypubsub`
+- optional: `pyopenssl` for `--ssl-adhoc`
 
 ### Installation
-Create a virtual environment and install dependencies:
-
 ```bash
+sudo apt update
+sudo apt install -y python3-full python3-venv
+
+mkdir -p ~/meshtastic_webchat
+cd ~/meshtastic_webchat
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install flask meshtastic pypubsub pyopenssl
+python -m pip install flask meshtastic pypubsub
 ```
 
-If the service runs with a dedicated user, make sure that user owns the project directory.
+Optional HTTPS:
+```bash
+python -m pip install pyopenssl
+```
 
----
+Copy into `~/meshtastic_webchat`:
+- `app.py`
+- `templates/index.html`
+- `meshtastic-webchat.service`
+- `README.md`
 
-### Manual start
-#### TCP node
+### Run manually
+
+#### Serial node
+```bash
+cd ~/meshtastic_webchat
+source .venv/bin/activate
+python app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088
+```
+
+#### TCP/IP node
+```bash
+cd ~/meshtastic_webchat
+source .venv/bin/activate
+python app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088
+```
+
+#### HTTPS adhoc
 ```bash
 python app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
 ```
 
-#### Serial node
-```bash
-python app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
+### Systemd
+The included service file is already set up for the same single-folder structure.
+
+Edit:
+`meshtastic-webchat.service`
+
+For TCP/IP:
+```ini
+ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
 ```
 
-Open the UI at:
-- `https://IP_OF_THE_SERVER:8088`
+For serial:
+```ini
+ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
+```
 
----
-
-### systemd
-The included service file keeps the same service name:
-- `meshtastic-webchat.service`
-
-Copy it to:
-- `/etc/systemd/system/meshtastic-webchat.service`
-
-Then reload and start:
-
+Install service:
 ```bash
+sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
 sudo systemctl daemon-reload
 sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 sudo systemctl status meshtastic-webchat
+```
+
+Logs:
+```bash
 journalctl -u meshtastic-webchat -f
 ```
 
-If you use a serial node, the service user must be in `dialout`.
+### Web UI usage
+- top-right language selector: IT / EN / FR
+- message field: write text
+- optional destination field: direct message to a node like `!9ee783b4`
+- leave destination empty for broadcast
+- right sidebar shows:
+  - backend connected to node
+  - backend ping
+  - last packet
+  - RX/TX message counts
+  - packets seen
+  - relays seen
+  - multi-hop seen
+  - bad packets
+  - send failures
+  - known nodes / online nodes
+  - channel utilization
+  - TX air utilization
+  - battery / voltage if available
 
----
+### Important note about TCP/network nodes
+If you use a network node, try to avoid multiple direct clients connected to the node at the same time.  
+Best practice:
+- let **this webchat backend** own the connection
+- do not connect other tools directly to the same node unless needed
+
+### Data files
+The backend creates:
+- `messages.db`
+- `messages.jsonl`
 
 ### Troubleshooting
-#### The page opens but later freezes or times out
-Possible causes:
-- multiple direct clients connected to the same TCP node
-- unstable Meshtastic TCP session
-- old cached Python files after an update
-
-Recommended checks:
-
+If the service starts but the UI behaves strangely:
 ```bash
 sudo systemctl status meshtastic-webchat
 journalctl -u meshtastic-webchat -f
-find /home/meshtastic/meshtastic_webchat -type d -name '__pycache__' -exec rm -rf {} +
 ```
 
-#### TCP node stays pingable but the UI becomes unresponsive
-That usually means the IP link is still up, but the Meshtastic TCP/API session became unhealthy.
-The built-in gateway/cache reduces the impact, but it cannot fully solve a bad upstream TCP session.
+If using serial and permissions fail:
+```bash
+sudo usermod -a -G dialout meshtastic
+```
 
-#### Serial works, TCP is unstable
-That usually points to the network/TCP side of the Meshtastic node, not the browser UI itself.
+Then re-login or reboot.
 
 ---
 
 ## Italiano
 
-**Versione pacchetto:** `v0.3.2`  
-**Path interno cartella:** `meshtastic_webchat`  
-**Nome servizio:** `meshtastic-webchat.service`
+### Cos'è questo progetto
+Meshtastic Web Chat è un'interfaccia web locale leggera per un singolo nodo Meshtastic.
 
-### Panoramica
-Meshtastic Web Chat è una UI web leggera per un nodo Meshtastic.
+Funziona con **un solo servizio** e **un solo path**:
+- cartella: `meshtastic_webchat`
+- servizio: `meshtastic-webchat.service`
 
-Questa release usa un layout **single-service / single-path**:
-- un solo path applicativo: `meshtastic_webchat`
-- un solo servizio: `meshtastic-webchat.service`
-- un solo processo principale: `app.py`
+Può collegarsi:
+- a un **nodo seriale** con `--node-port /dev/ttyUSB0`
+- a un **nodo di rete** con `--node-host 192.168.x.x`
 
-L’applicazione può collegarsi al nodo in due modi:
-- **nodo TCP**: `--node-host 192.168.0.18`
-- **nodo seriale**: `--node-port /dev/ttyUSB0`
+### Funzione gateway / proxy integrata
+Questa release tiene tutto in **un solo processo**, ma l'applicazione si comporta comunque come un **gateway integrato**.
 
-Supporta anche:
-- HTTPS opzionale con `--ssl-adhoc`
-- selettore lingua Italiano / English
-- statistiche nella barra destra
-- reconnect automatico della connessione Meshtastic
-- risposte HTTP basate su cache per ridurre i blocchi della UI
+Questo significa:
+- il browser non parla mai direttamente al nodo Meshtastic
+- il backend possiede **l'unica connessione diretta** verso il nodo
+- il browser parla solo con Flask/HTTP in locale
 
----
+Questo aiuta perché i nodi Meshtastic TCP/rete possono diventare instabili se più client si collegano direttamente nello stesso momento. Mantenere una sola connessione “proprietaria” nel backend migliora la stabilità e rende la UI più sicura.
 
-### Perché esiste la funzione proxy/gateway integrata
-Anche se questo pacchetto gira come **processo singolo**, funziona anche come **owner della connessione / gateway** tra browser e nodo Meshtastic reale.
+### Cosa aiuta a fare
+L'approccio gateway integrato aiuta a:
+- ridurre la pressione di più client diretti sui nodi TCP/rete
+- mantenere reattiva la UI anche quando il nodo si riconnette
+- isolare le richieste del browser dalla connessione Meshtastic
+- mantenere storico e statistiche locali tramite dati in cache
 
-In pratica, la webchat si comporta come un piccolo proxy locale:
-- il browser parla solo con l’applicazione web
-- l’applicazione web mantiene la connessione Meshtastic
-- il nodo Meshtastic vede un solo **client diretto**
+### Lingue supportate dalla UI
+L'interfaccia supporta:
+- Italiano
+- Inglese
+- Francese
 
-Questo è importante perché alcuni nodi Meshtastic TCP/rete possono diventare instabili quando ci sono **più client diretti** contemporanei.
-Esempi tipici:
-- app Android collegata direttamente allo stesso nodo
-- CLI collegata direttamente con `--host`
-- backend web collegato direttamente allo stesso nodo
+La lingua si sceglie dal menu in alto a destra e viene salvata nel browser con `localStorage`.
 
-Quando succede, le sessioni TCP dirette possono interferire tra loro.
+### Funzioni principali
+- chat da browser
+- storico locale in SQLite
+- log append-only in JSONL
+- elenco nodi noti
+- sidebar destra con statistiche
+- comportamento da gateway integrato
+- loop di riconnessione del backend Meshtastic
+- HTTPS opzionale con SSL adhoc di Flask
 
-#### A cosa serve concretamente questa funzione proxy/gateway
-Il modello gateway integrato aiuta a:
-- ridurre i conflitti dovuti a più client diretti verso il nodo
-- mantenere **un solo owner** della connessione Meshtastic
-- esporre una UI web stabile a più browser
-- mantenere uno stato cached anche se la connessione al nodo cade temporaneamente
-- riconnettersi in background senza chiudere la UI web
-- evitare chiamate dirette al nodo a ogni request HTTP
+### Requisiti
+Consigliati:
+- Linux
+- Python 3.10+
+- un nodo Meshtastic raggiungibile via seriale o IP
+- ambiente virtuale `venv`
 
-#### Cosa **non** fa
-Questa applicazione **non** è ancora un proxy virtual-node completo del protocollo Meshtastic per l’app mobile ufficiale.
-È una web application con una funzione interna di gateway single-owner.
-
-Quindi:
-- **sì**: più browser possono usare la webchat
-- **sì**: la webchat prova a schermare la UI dai problemi TCP
-- **no**: non è ancora un proxy completo del protocollo Meshtastic per compatibilità Android/iOS ufficiale
-
----
-
-### Modello d’uso consigliato
-Per la massima stabilità:
-- lascia che **Meshtastic Web Chat** sia l’unico client diretto collegato al nodo
-- **non** collegare contemporaneamente anche l’app Android allo stesso nodo TCP
-- **non** usare la CLI `--host` verso lo stesso nodo mentre gira la webchat
-- se usi la seriale, assicurati che nessun altro processo possieda la porta
-
-Modello consigliato:
-
-`Browser -> Web Chat -> nodo Meshtastic`
-
-Modello meno stabile:
-
-`Browser + app Android + CLI -> stesso nodo Meshtastic TCP`
-
----
+Pacchetti Python:
+- `flask`
+- `meshtastic`
+- `pypubsub`
+- opzionale: `pyopenssl` per `--ssl-adhoc`
 
 ### Installazione
-Crea un ambiente virtuale e installa le dipendenze:
-
 ```bash
+sudo apt update
+sudo apt install -y python3-full python3-venv
+
+mkdir -p ~/meshtastic_webchat
+cd ~/meshtastic_webchat
+
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install flask meshtastic pypubsub pyopenssl
+python -m pip install flask meshtastic pypubsub
 ```
 
-Se il servizio gira con un utente dedicato, assicurati che quell’utente sia proprietario della directory del progetto.
+HTTPS opzionale:
+```bash
+python -m pip install pyopenssl
+```
 
----
+Copia dentro `~/meshtastic_webchat`:
+- `app.py`
+- `templates/index.html`
+- `meshtastic-webchat.service`
+- `README.md`
 
 ### Avvio manuale
-#### Nodo TCP
+
+#### Nodo seriale
+```bash
+cd ~/meshtastic_webchat
+source .venv/bin/activate
+python app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088
+```
+
+#### Nodo TCP/IP
+```bash
+cd ~/meshtastic_webchat
+source .venv/bin/activate
+python app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088
+```
+
+#### HTTPS adhoc
 ```bash
 python app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
 ```
 
-#### Nodo seriale
-```bash
-python app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
+### Systemd
+Il file servizio incluso è già impostato per la stessa struttura a cartella singola.
+
+Modifica:
+`meshtastic-webchat.service`
+
+Per TCP/IP:
+```ini
+ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
 ```
 
-Apri la UI su:
-- `https://IP_DEL_SERVER:8088`
+Per seriale:
+```ini
+ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --node-port /dev/ttyUSB0 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
+```
 
----
-
-### systemd
-Il file di servizio incluso mantiene lo stesso nome:
-- `meshtastic-webchat.service`
-
-Copialo in:
-- `/etc/systemd/system/meshtastic-webchat.service`
-
-Poi ricarica e avvia:
-
+Installazione del servizio:
 ```bash
+sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
 sudo systemctl daemon-reload
 sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 sudo systemctl status meshtastic-webchat
+```
+
+Log:
+```bash
 journalctl -u meshtastic-webchat -f
 ```
 
-Se usi un nodo seriale, l’utente del servizio deve essere nel gruppo `dialout`.
+### Uso della UI web
+- selettore lingua in alto a destra: IT / EN / FR
+- campo messaggio: scrivi il testo
+- campo destinatario opzionale: messaggio diretto a un nodo come `!9ee783b4`
+- lasciando vuoto il destinatario fai broadcast
+- la sidebar destra mostra:
+  - backend connesso al nodo
+  - ping backend
+  - ultimo pacchetto
+  - contatori messaggi RX/TX
+  - pacchetti visti
+  - relay visti
+  - multi-hop visti
+  - pacchetti corrotti
+  - invii falliti
+  - nodi noti / online
+  - utilizzo canale
+  - utilizzo TX
+  - batteria / tensione se disponibili
 
----
+### Nota importante sui nodi TCP/rete
+Se usi un nodo di rete, cerca di evitare più client diretti collegati contemporaneamente allo stesso nodo.  
+Buona pratica:
+- lascia che **questa webchat** possieda la connessione
+- evita di collegare altri strumenti direttamente allo stesso nodo se non necessario
 
-### Risoluzione problemi
-#### La pagina si apre ma dopo un po’ si blocca o va in timeout
-Cause possibili:
-- più client diretti collegati allo stesso nodo TCP
-- sessione TCP Meshtastic instabile
-- file Python cache vecchi dopo un aggiornamento
+### File dati
+Il backend crea:
+- `messages.db`
+- `messages.jsonl`
 
-Controlli consigliati:
-
+### Troubleshooting
+Se il servizio parte ma la UI si comporta in modo anomalo:
 ```bash
 sudo systemctl status meshtastic-webchat
 journalctl -u meshtastic-webchat -f
-find /home/meshtastic/meshtastic_webchat -type d -name '__pycache__' -exec rm -rf {} +
 ```
 
-#### Il nodo TCP risponde al ping ma la UI non risponde più
-Di solito significa che il link IP è ancora su, ma la sessione Meshtastic TCP/API è diventata instabile.
-Il gateway/cache interno riduce l’impatto, ma non può eliminare del tutto un upstream TCP difettoso.
+Se usi la seriale e hai problemi di permessi:
+```bash
+sudo usermod -a -G dialout meshtastic
+```
 
-#### La seriale è stabile, il TCP no
-Di solito questo indica un problema nel lato rete/TCP del nodo Meshtastic, non nella UI browser in sé.
+Poi esegui di nuovo login o riavvia il sistema.
