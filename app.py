@@ -4,95 +4,193 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import queue
 import signal
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, asdict
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 from pubsub import pub
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
 
-VERSION = "0.3.3"
-
+VERSION = "0.3.5"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "messages.db"
 LOG_JSONL = BASE_DIR / "messages.jsonl"
+DEFAULT_CONFIG_PATH = BASE_DIR / "app_config.json"
+
+DEFAULT_CONFIG = {
+    "version": VERSION,
+    "node": {
+        "mode": "tcp",
+        "host": "192.168.0.18",
+        "port": "",
+        "channel": 0,
+    },
+    "web": {
+        "listen_host": "0.0.0.0",
+        "listen_port": 8088,
+        "ssl_adhoc": True,
+    },
+    "ui": {
+        "default_language": "it",
+    },
+}
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
-logger = logging.getLogger("meshtastic_webchat")
+app.config["JSON_AS_ASCII"] = False
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("meshtastic-webchat")
 
 iface = None
 iface_lock = threading.Lock()
-db_lock = threading.Lock()
+config_lock = threading.Lock()
 cache_lock = threading.Lock()
-outbound_queue: "queue.Queue[dict]" = queue.Queue()
+storage_lock = threading.Lock()
+runtime_lock = threading.Lock()
 running = True
 
-APP_MODE = None
-APP_TARGET = None
-CHANNEL_INDEX = 0
+current_config: dict[str, Any] = {}
+reconnect_event = threading.Event()
+outbound_queue: queue.Queue[dict[str, Any]] = queue.Queue()
+recent_messages: deque[dict[str, Any]] = deque(maxlen=300)
+
+runtime_state: dict[str, Any] = {
+    "backend_connected": False,
+    "connection_detail": "starting",
+    "last_connect_at": None,
+    "last_disconnect_at": None,
+    "last_packet_at": None,
+    "last_text_at": None,
+    "last_sync_at": None,
+    "last_error": None,
+    "last_probe_ms": None,
+    "connect_attempts": 0,
+    "reconnects": 0,
+    "rx_packets_total": 0,
+    "rx_text_messages": 0,
+    "tx_text_messages": 0,
+    "rx_relay_seen": 0,
+    "rx_multihop_seen": 0,
+    "rx_bad_text": 0,
+    "tx_failed": 0,
+    "queue_depth": 0,
+}
+
+cached_nodes: list[dict[str, Any]] = []
+cached_health: dict[str, Any] = {
+    "backend_connected_to_node": False,
+    "probe_latency_ms": None,
+    "detail": "starting",
+    "node_num": None,
+    "node_name": None,
+    "last_packet_at": None,
+}
+cached_local_stats: dict[str, Any] = {}
 
 
+# ---------- config ----------
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    out = json.loads(json.dumps(base))
+    for key, value in (override or {}).items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def load_config(path: Path) -> dict[str, Any]:
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            cfg = deep_merge(DEFAULT_CONFIG, loaded)
+            cfg["version"] = VERSION
+            return cfg
+        except Exception as exc:
+            logger.warning("Invalid config file %s: %s", path, exc)
+    path.write_text(json.dumps(DEFAULT_CONFIG, indent=2, ensure_ascii=False), encoding="utf-8")
+    return json.loads(json.dumps(DEFAULT_CONFIG))
+
+
+def save_config(path: Path, cfg: dict[str, Any]) -> None:
+    cfg = deep_merge(DEFAULT_CONFIG, cfg)
+    cfg["version"] = VERSION
+    path.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+def get_config_snapshot() -> dict[str, Any]:
+    with config_lock:
+        return json.loads(json.dumps(current_config))
+
+
+def set_config(new_cfg: dict[str, Any]) -> None:
+    global current_config
+    with config_lock:
+        current_config = deep_merge(DEFAULT_CONFIG, new_cfg)
+        current_config["version"] = VERSION
+
+
+# ---------- helpers ----------
 def now_iso() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
-@dataclass
-class RuntimeState:
-    backend_connected: bool = False
-    connection_detail: str = "disconnected"
-    connection_mode: str = ""
-    connection_target: str = ""
-    messages_rx: int = 0
-    messages_tx: int = 0
-    send_failures: int = 0
-    packets_rx_seen: int = 0
-    relay_seen: int = 0
-    multi_hop_seen: int = 0
-    bad_packets_seen: int = 0
-    last_packet_at: str = ""
-    last_text_at: str = ""
-    last_error: Optional[str] = None
-    last_connect_at: str = ""
-    last_disconnect_at: str = ""
-    backend_probe_latency_ms: Optional[float] = None
-    online_nodes: int = 0
-    total_nodes: int = 0
-    channel_utilization: Optional[float] = None
-    air_util_tx: Optional[float] = None
-    battery_level: Optional[int] = None
-    voltage: Optional[float] = None
-    num_tx_relay: Optional[int] = None
-    num_rx_bad: Optional[int] = None
-    num_tx_dropped: Optional[int] = None
-    node_name: str = ""
-    node_id: str = ""
+def jsonable(obj: Any) -> Any:
+    if obj is None:
+        return None
+    if isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, bytes):
+        return obj.hex()
+    if isinstance(obj, dict):
+        return {str(k): jsonable(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set, deque)):
+        return [jsonable(v) for v in obj]
+    return str(obj)
 
 
-runtime = RuntimeState()
-cached_nodes: list[dict] = []
-
-
-def _connect_db():
-    conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=10, check_same_thread=False)
     conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     return conn
 
 
-def init_db():
-    with db_lock:
-        conn = _connect_db()
-        conn.execute(
-            '''
+def update_runtime(**kwargs: Any) -> None:
+    with runtime_lock:
+        runtime_state.update(kwargs)
+        runtime_state["queue_depth"] = outbound_queue.qsize()
+
+
+def incr_stat(key: str, delta: int = 1) -> None:
+    with runtime_lock:
+        runtime_state[key] = int(runtime_state.get(key, 0)) + delta
+        runtime_state["queue_depth"] = outbound_queue.qsize()
+
+
+def snapshot_runtime() -> dict[str, Any]:
+    with runtime_lock:
+        out = dict(runtime_state)
+    out["queue_depth"] = outbound_queue.qsize()
+    return out
+
+
+# ---------- storage ----------
+def init_db() -> None:
+    with storage_lock:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            """
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 ts TEXT NOT NULL,
@@ -102,48 +200,57 @@ def init_db():
                 text TEXT NOT NULL,
                 raw_json TEXT
             )
-            '''
+            """
         )
         conn.commit()
         conn.close()
 
 
-def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict] = None):
-    ts = now_iso()
-    raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
-    with db_lock:
-        conn = _connect_db()
+def bootstrap_runtime_from_db() -> None:
+    with storage_lock:
+        conn = get_conn()
         cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, direction, from_id, to_id, text, raw_json),
-        )
-        conn.commit()
-        msg_id = cur.lastrowid
+        cur.execute("SELECT COUNT(*) FROM messages WHERE direction='in'")
+        rx = cur.fetchone()[0]
+        cur.execute("SELECT COUNT(*) FROM messages WHERE direction='out'")
+        tx = cur.fetchone()[0]
         conn.close()
+    update_runtime(rx_text_messages=rx, tx_text_messages=tx)
 
+
+def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict] = None) -> dict[str, Any]:
     payload = {
-        "id": msg_id,
-        "ts": ts,
+        "ts": now_iso(),
         "direction": direction,
         "from_id": from_id,
         "to_id": to_id,
         "text": text,
     }
+    raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
+    with storage_lock:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
+            (payload["ts"], direction, from_id, to_id, text, raw_json),
+        )
+        conn.commit()
+        payload["id"] = cur.lastrowid
+        conn.close()
+    recent_messages.append(payload)
     with open(LOG_JSONL, "a", encoding="utf-8") as f:
         json.dump({**payload, "raw_packet": raw_packet}, f, ensure_ascii=False, default=str)
         f.write("\n")
     return payload
 
 
-def load_messages(limit: int = 200):
-    limit = max(1, min(limit, 500))
-    with db_lock:
-        conn = _connect_db()
-        rows = conn.execute(
-            "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+def load_messages(limit: int = 100) -> list[dict[str, Any]]:
+    limit = min(max(limit, 1), 500)
+    with storage_lock:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?", (limit,))
+        rows = cur.fetchall()
         conn.close()
     rows.reverse()
     return [
@@ -159,27 +266,30 @@ def load_messages(limit: int = 200):
     ]
 
 
-def clear_messages():
-    with db_lock:
-        conn = _connect_db()
-        conn.execute("DELETE FROM messages")
+def clear_messages() -> None:
+    with storage_lock:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("DELETE FROM messages")
         conn.commit()
         conn.close()
+    recent_messages.clear()
+    update_runtime(rx_text_messages=0, tx_text_messages=0)
 
 
-def update_runtime(**kwargs):
-    with cache_lock:
-        for k, v in kwargs.items():
-            setattr(runtime, k, v)
+def message_count() -> int:
+    with storage_lock:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM messages")
+        count = cur.fetchone()[0]
+        conn.close()
+    return count
 
 
-def snapshot_runtime():
-    with cache_lock:
-        return asdict(runtime)
-
-
+# ---------- packet parsing ----------
 def decode_text(packet: dict) -> Optional[str]:
-    decoded = packet.get("decoded", {}) or {}
+    decoded = packet.get("decoded", {})
     text = decoded.get("text")
     if text:
         return text
@@ -192,71 +302,47 @@ def decode_text(packet: dict) -> Optional[str]:
     return None
 
 
+def packet_is_multihop(packet: dict) -> bool:
+    hop_start = packet.get("hopStart")
+    hop_limit = packet.get("hopLimit")
+    return isinstance(hop_start, int) and isinstance(hop_limit, int) and hop_start > hop_limit
+
+
+def packet_has_relay(packet: dict) -> bool:
+    relay_node = packet.get("relayNode")
+    if relay_node not in (None, "", 0):
+        return True
+    return packet_is_multihop(packet)
+
+
+# ---------- meshtastic callbacks ----------
+def on_receive(packet, interface=None):
+    incr_stat("rx_packets_total")
+    update_runtime(last_packet_at=now_iso())
+    if packet_has_relay(packet):
+        incr_stat("rx_relay_seen")
+    if packet_is_multihop(packet):
+        incr_stat("rx_multihop_seen")
+    decoded = packet.get("decoded", {})
+    portnum = str(decoded.get("portnum", ""))
+    if "TEXT" in portnum and not decoded.get("text"):
+        payload = decoded.get("payload")
+        if payload not in (None, b"", ""):
+            incr_stat("rx_bad_text")
+
+
 def on_text(packet, interface=None):
     text = decode_text(packet)
     if not text:
         return
     from_id = packet.get("fromId", str(packet.get("from", "unknown")))
     to_id = packet.get("toId", str(packet.get("to", "^all")))
+    incr_stat("rx_text_messages")
+    update_runtime(last_text_at=now_iso())
     save_message("in", from_id, to_id, text, packet)
-    state = snapshot_runtime()
-    update_runtime(
-        messages_rx=state["messages_rx"] + 1,
-        last_packet_at=now_iso(),
-        last_text_at=now_iso(),
-    )
 
 
-def on_receive(packet, interface=None):
-    state = snapshot_runtime()
-    relay_seen = state["relay_seen"]
-    multi_hop_seen = state["multi_hop_seen"]
-    bad_packets_seen = state["bad_packets_seen"]
-
-    if packet.get("relayNode") is not None:
-        relay_seen += 1
-
-    hop_start = packet.get("hopStart")
-    hop_limit = packet.get("hopLimit")
-    try:
-        if hop_start is not None and hop_limit is not None and int(hop_start) > int(hop_limit):
-            multi_hop_seen += 1
-    except Exception:
-        pass
-
-    if packet.get("rxSnr") is None and packet.get("rxRssi") is None and packet.get("decoded") is None:
-        bad_packets_seen += 1
-
-    update_runtime(
-        packets_rx_seen=state["packets_rx_seen"] + 1,
-        relay_seen=relay_seen,
-        multi_hop_seen=multi_hop_seen,
-        bad_packets_seen=bad_packets_seen,
-        last_packet_at=now_iso(),
-    )
-
-
-def on_connection_established(interface, topic=pub.AUTO_TOPIC):
-    logger.info("Meshtastic connection established")
-    update_runtime(
-        backend_connected=True,
-        connection_detail="connected",
-        last_connect_at=now_iso(),
-        last_error=None,
-    )
-
-
-def on_connection_lost(interface=None, topic=pub.AUTO_TOPIC):
-    logger.warning("Meshtastic connection lost")
-    update_runtime(
-        backend_connected=False,
-        connection_detail="connection lost",
-        last_disconnect_at=now_iso(),
-    )
-    close_iface()
-
-
-def close_iface():
+def close_iface() -> None:
     global iface
     with iface_lock:
         local = iface
@@ -269,147 +355,187 @@ def close_iface():
 
 
 def connect_meshtastic(mode: str, target: str):
-    logger.info("Connecting to Meshtastic via %s -> %s", mode, target)
-    if mode == "serial":
-        return meshtastic.serial_interface.SerialInterface(devPath=target)
-    return meshtastic.tcp_interface.TCPInterface(hostname=target)
-
-
-def connector_loop():
     global iface
-    backoff = 3
+    if mode == "serial":
+        local = meshtastic.serial_interface.SerialInterface(devPath=target)
+    else:
+        local = meshtastic.tcp_interface.TCPInterface(hostname=target)
+    with iface_lock:
+        iface = local
+    return local
+
+
+# ---------- background workers ----------
+def connection_worker() -> None:
+    connected_once = False
     while running:
-        try:
-            if iface is None:
-                update_runtime(connection_detail="connecting")
-                new_iface = connect_meshtastic(APP_MODE, APP_TARGET)
-                with iface_lock:
-                    iface = new_iface
+        cfg = get_config_snapshot()
+        node_cfg = cfg["node"]
+        mode = node_cfg.get("mode", "tcp")
+        target = node_cfg.get("port") if mode == "serial" else node_cfg.get("host")
+
+        if iface is None:
+            try:
+                incr_stat("connect_attempts")
+                connect_meshtastic(mode, target)
+                if connected_once:
+                    incr_stat("reconnects")
+                connected_once = True
                 update_runtime(
                     backend_connected=True,
-                    connection_detail="connected",
-                    connection_mode=APP_MODE,
-                    connection_target=APP_TARGET,
+                    connection_detail=f"connected via {mode} -> {target}",
                     last_connect_at=now_iso(),
                     last_error=None,
                 )
-                logger.info("Connected to Meshtastic via %s -> %s", APP_MODE, APP_TARGET)
-                backoff = 3
-            time.sleep(2)
-        except Exception as exc:
-            logger.warning("Meshtastic connector loop error: %s", exc)
-            update_runtime(
-                backend_connected=False,
-                connection_detail="reconnect pending",
-                last_error=str(exc),
-                last_disconnect_at=now_iso(),
-            )
-            close_iface()
-            time.sleep(backoff)
-            backoff = min(backoff * 2, 20)
-
-
-def cache_worker():
-    global cached_nodes
-    while running:
-        started = time.time()
-        nodes_out = []
-        local_updates = {}
-        try:
-            with iface_lock:
-                local_iface = iface
-
-            if local_iface is not None:
-                nodes = getattr(local_iface, "nodes", {}) or {}
-                my_info = getattr(local_iface, "myInfo", {}) or {}
-                nodes_by_num = getattr(local_iface, "nodesByNum", {}) or {}
-                my_num = my_info.get("myNodeNum") if isinstance(my_info, dict) else getattr(my_info, "myNodeNum", None)
-
-                for node_id, node in nodes.items():
-                    user = node.get("user", {}) or {}
-                    nodes_out.append(
-                        {
-                            "node_id": node_id,
-                            "name": user.get("longName") or user.get("shortName") or node_id,
-                            "short_name": user.get("shortName") or "",
-                            "hw_model": user.get("hwModel") or "",
-                            "last_heard": node.get("lastHeard"),
-                        }
-                    )
-                nodes_out.sort(key=lambda x: (x["name"], x["node_id"]))
-
-                if my_num is not None and my_num in nodes_by_num:
-                    node = nodes_by_num.get(my_num, {}) or {}
-                    user = node.get("user", {}) or {}
-                    metrics = node.get("deviceMetrics", {}) or {}
-                    local_stats = node.get("localStats", {}) or {}
-                    local_updates = {
-                        "node_name": user.get("longName") or user.get("shortName") or "",
-                        "node_id": user.get("id") or "",
-                        "battery_level": metrics.get("batteryLevel"),
-                        "voltage": metrics.get("voltage"),
-                        "channel_utilization": local_stats.get("channelUtilization", metrics.get("channelUtilization")),
-                        "air_util_tx": local_stats.get("airUtilTx", metrics.get("airUtilTx")),
-                        "online_nodes": local_stats.get("numOnlineNodes", len(nodes_out)),
-                        "total_nodes": local_stats.get("numTotalNodes", len(nodes_out)),
-                        "num_tx_relay": local_stats.get("numTxRelay"),
-                        "num_rx_bad": local_stats.get("numPacketsRxBad"),
-                        "num_tx_dropped": local_stats.get("numTxDropped"),
-                    }
-
+                logger.info("Connected to Meshtastic via %s -> %s", mode, target)
+                reconnect_event.clear()
+            except Exception as exc:
                 update_runtime(
-                    backend_probe_latency_ms=round((time.time() - started) * 1000, 1),
-                    connection_detail="connected",
-                    backend_connected=True,
-                    **local_updates,
+                    backend_connected=False,
+                    connection_detail=f"connect failed via {mode} -> {target}",
+                    last_error=str(exc),
                 )
-        except Exception as exc:
-            logger.warning("Cache refresh issue: %s", exc)
-            update_runtime(
-                backend_connected=False,
-                connection_detail="cache refresh failed",
-                last_error=str(exc),
-            )
+                logger.warning("Meshtastic connect failed via %s -> %s: %s", mode, target, exc)
+                time.sleep(5)
+                continue
 
+        if reconnect_event.is_set():
+            update_runtime(backend_connected=False, connection_detail="reconnecting")
+            close_iface()
+            reconnect_event.clear()
+            time.sleep(1)
+            continue
+
+        time.sleep(1)
+
+
+def refresh_cached_state() -> None:
+    global cached_nodes, cached_health, cached_local_stats
+    started = datetime.now()
+    new_nodes = []
+    new_health = {
+        "backend_connected_to_node": False,
+        "probe_latency_ms": None,
+        "detail": snapshot_runtime().get("connection_detail"),
+        "node_num": None,
+        "node_name": None,
+        "last_packet_at": snapshot_runtime().get("last_packet_at"),
+    }
+    new_local = {}
+
+    local_iface = None
+    with iface_lock:
+        local_iface = iface
+    if local_iface is None:
         with cache_lock:
-            cached_nodes = nodes_out
+            cached_nodes = []
+            cached_health = new_health
+            cached_local_stats = {}
+        return
+
+    try:
+        nodes = getattr(local_iface, "nodes", {}) or {}
+        nodes_by_num = getattr(local_iface, "nodesByNum", {}) or {}
+        my_info = getattr(local_iface, "myInfo", {}) or {}
+        if not isinstance(my_info, dict):
+            my_info = {}
+        for node_id, node in nodes.items():
+            user = node.get("user", {})
+            new_nodes.append(
+                {
+                    "node_id": node_id,
+                    "name": user.get("longName") or user.get("shortName") or node_id,
+                    "short_name": user.get("shortName") or "",
+                    "hw_model": user.get("hwModel") or "",
+                    "last_heard": node.get("lastHeard"),
+                }
+            )
+        new_nodes.sort(key=lambda x: (x["name"] or "", x["node_id"]))
+
+        node_num = my_info.get("myNodeNum")
+        node = nodes_by_num.get(node_num, {}) if node_num is not None else {}
+        user = node.get("user", {}) or {}
+        local_stats = node.get("localStats", {}) or {}
+        device_metrics = node.get("deviceMetrics", {}) or {}
+
+        def val(key: str):
+            return local_stats.get(key)
+
+        new_health = {
+            "backend_connected_to_node": bool(my_info) or bool(nodes),
+            "probe_latency_ms": round((datetime.now() - started).total_seconds() * 1000, 1),
+            "detail": "connected" if (bool(my_info) or bool(nodes)) else "no valid response",
+            "node_num": node_num,
+            "node_name": user.get("longName") or user.get("shortName"),
+            "last_packet_at": snapshot_runtime().get("last_packet_at"),
+        }
+        new_local = {
+            "uptime_seconds": val("uptimeSeconds"),
+            "channel_utilization": local_stats.get("channelUtilization", device_metrics.get("channelUtilization")),
+            "air_util_tx": local_stats.get("airUtilTx", device_metrics.get("airUtilTx")),
+            "num_packets_tx": val("numPacketsTx"),
+            "num_packets_rx": val("numPacketsRx"),
+            "num_packets_rx_bad": val("numPacketsRxBad"),
+            "num_tx_relay": val("numTxRelay"),
+            "num_tx_relay_canceled": val("numTxRelayCanceled"),
+            "num_tx_dropped": val("numTxDropped"),
+            "num_rx_dupe": val("numRxDupe"),
+            "num_online_nodes": val("numOnlineNodes"),
+            "num_total_nodes": val("numTotalNodes"),
+            "battery_level": device_metrics.get("batteryLevel"),
+            "voltage": device_metrics.get("voltage"),
+        }
+        update_runtime(backend_connected=True, connection_detail="connected", last_probe_ms=new_health["probe_latency_ms"], last_sync_at=now_iso())
+    except Exception as exc:
+        update_runtime(backend_connected=False, connection_detail="snapshot failed", last_error=str(exc))
+        new_health["detail"] = str(exc)
+        reconnect_event.set()
+
+    with cache_lock:
+        cached_nodes = new_nodes
+        cached_health = new_health
+        cached_local_stats = new_local
+
+
+def cache_worker() -> None:
+    while running:
+        refresh_cached_state()
         time.sleep(5)
 
 
-def sender_worker():
+def sender_worker() -> None:
     while running:
         try:
             item = outbound_queue.get(timeout=1)
         except queue.Empty:
             continue
-
-        text = item["text"]
-        dest = item.get("dest") or ""
         try:
+            local_iface = None
             with iface_lock:
                 local_iface = iface
-                if local_iface is None:
-                    raise RuntimeError("Meshtastic node not connected")
-                kwargs = {"text": text, "wantAck": False, "channelIndex": CHANNEL_INDEX}
-                if dest:
-                    kwargs["destinationId"] = dest
-                local_iface.sendText(**kwargs)
-            to_id = dest or "^all"
-            save_message("out", "io", to_id, text)
-            state = snapshot_runtime()
-            update_runtime(messages_tx=state["messages_tx"] + 1, last_packet_at=now_iso())
+            if local_iface is None:
+                raise RuntimeError("backend not connected")
+            node_cfg = get_config_snapshot()["node"]
+            kwargs = {
+                "text": item["text"],
+                "wantAck": False,
+                "channelIndex": int(node_cfg.get("channel", 0)),
+            }
+            if item.get("dest"):
+                kwargs["destinationId"] = item["dest"]
+            local_iface.sendText(**kwargs)
+            incr_stat("tx_text_messages")
+            save_message("out", "io", item.get("dest") or "^all", item["text"])
         except Exception as exc:
-            state = snapshot_runtime()
-            update_runtime(send_failures=state["send_failures"] + 1, last_error=str(exc))
+            incr_stat("tx_failed")
+            update_runtime(last_error=str(exc))
             logger.warning("Send failed: %s", exc)
+        finally:
+            outbound_queue.task_done()
+            update_runtime(queue_depth=outbound_queue.qsize())
 
 
-def stop_handler(signum, frame):
-    global running
-    running = False
-    close_iface()
-
-
+# ---------- API ----------
 @app.route("/")
 def index():
     return render_template("index.html", version=VERSION)
@@ -417,36 +543,67 @@ def index():
 
 @app.route("/api/status")
 def api_status():
-    state = snapshot_runtime()
-    return jsonify(
-        {
-            "ok": True,
-            "version": VERSION,
-            "mode": APP_MODE,
-            "target": APP_TARGET,
-            "channel": CHANNEL_INDEX,
-            "backend_connected": state["backend_connected"],
-            "connection_detail": state["connection_detail"],
-        }
-    )
+    cfg = get_config_snapshot()
+    return jsonify({
+        "ok": True,
+        "version": VERSION,
+        "node": cfg["node"],
+        "web": cfg["web"],
+        "ui": cfg["ui"],
+    })
 
 
 @app.route("/api/messages")
 def api_messages():
-    limit = request.args.get("limit", default=200, type=int)
-    return jsonify(load_messages(limit))
+    limit = min(int(request.args.get("limit", 100)), 500)
+    return jsonify(load_messages(limit=limit))
 
 
 @app.route("/api/nodes")
 def api_nodes():
     with cache_lock:
-        nodes = list(cached_nodes)
-    return jsonify(nodes)
+        return jsonify(jsonable(cached_nodes))
 
 
 @app.route("/api/stats")
 def api_stats():
-    return jsonify(snapshot_runtime())
+    stored = snapshot_runtime()
+    with cache_lock:
+        local = dict(cached_local_stats)
+        health = dict(cached_health)
+        known_nodes = len(cached_nodes)
+    return jsonify({
+        "version": VERSION,
+        "started_at": None,
+        "stored_messages": message_count(),
+        "known_nodes": known_nodes,
+        "received_messages": stored.get("rx_text_messages", 0),
+        "sent_messages": stored.get("tx_text_messages", 0),
+        "received_packets": stored.get("rx_packets_total", 0),
+        "relayed_packets_seen": stored.get("rx_relay_seen", 0),
+        "multihop_packets_seen": stored.get("rx_multihop_seen", 0),
+        "bad_text_packets_seen": stored.get("rx_bad_text", 0),
+        "send_failures": stored.get("tx_failed", 0),
+        "queue_depth": stored.get("queue_depth", 0),
+        "health": health,
+        "local": local,
+    })
+
+
+@app.route("/api/debug")
+def api_debug():
+    cfg = get_config_snapshot()
+    with cache_lock:
+        health = dict(cached_health)
+        local = dict(cached_local_stats)
+    return jsonify({
+        "version": VERSION,
+        "config": cfg,
+        "runtime": snapshot_runtime(),
+        "health": health,
+        "local_stats": local,
+        "recent_messages": list(recent_messages)[-20:],
+    })
 
 
 @app.route("/api/send", methods=["POST"])
@@ -456,7 +613,8 @@ def api_send():
     dest = (data.get("dest") or "").strip()
     if not text:
         return jsonify({"ok": False, "error": "Empty message"}), 400
-    outbound_queue.put({"text": text, "dest": dest})
+    outbound_queue.put({"text": text, "dest": dest or None})
+    update_runtime(queue_depth=outbound_queue.qsize())
     return jsonify({"ok": True, "queued": True})
 
 
@@ -466,51 +624,122 @@ def api_clear():
     return jsonify({"ok": True})
 
 
-def main():
-    global APP_MODE, APP_TARGET, CHANNEL_INDEX
+@app.route("/api/config/export")
+def api_config_export():
+    path = BASE_DIR / f"meshtastic_webchat_config_{VERSION}.json"
+    path.write_text(json.dumps(get_config_snapshot(), indent=2, ensure_ascii=False), encoding="utf-8")
+    return send_file(path, mimetype="application/json", as_attachment=True, download_name=path.name)
 
-    parser = argparse.ArgumentParser(description="Meshtastic Web Chat")
-    group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--node-port", help="Serial port, for example /dev/ttyUSB0")
-    group.add_argument("--node-host", help="Node IP/hostname, for example 192.168.0.18")
-    parser.add_argument("--listen-host", default="127.0.0.1", help="Local web bind host")
-    parser.add_argument("--listen-port", type=int, default=8088, help="Local web bind port")
-    parser.add_argument("--channel", type=int, default=0, help="Meshtastic channel index")
-    parser.add_argument("--ssl-adhoc", action="store_true", help="Enable simple self-signed HTTPS")
-    args = parser.parse_args()
 
-    APP_MODE = "serial" if args.node_port else "tcp"
-    APP_TARGET = args.node_port or args.node_host
-    CHANNEL_INDEX = args.channel
+@app.route("/api/config/import", methods=["POST"])
+def api_config_import():
+    uploaded = request.files.get("file")
+    if not uploaded:
+        return jsonify({"ok": False, "error": "No file uploaded"}), 400
+    try:
+        new_cfg = json.loads(uploaded.read().decode("utf-8"))
+        old_cfg = get_config_snapshot()
+        merged = deep_merge(DEFAULT_CONFIG, new_cfg)
+        save_config(Path(app.config["CONFIG_PATH"]), merged)
+        set_config(merged)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+        restart_required = (
+            old_cfg["web"]["listen_host"] != merged["web"]["listen_host"] or
+            int(old_cfg["web"]["listen_port"]) != int(merged["web"]["listen_port"]) or
+            bool(old_cfg["web"]["ssl_adhoc"]) != bool(merged["web"]["ssl_adhoc"])
+        )
+        reconnect_needed = (
+            old_cfg["node"]["mode"] != merged["node"]["mode"] or
+            old_cfg["node"].get("host") != merged["node"].get("host") or
+            old_cfg["node"].get("port") != merged["node"].get("port") or
+            int(old_cfg["node"].get("channel", 0)) != int(merged["node"].get("channel", 0))
+        )
+        if reconnect_needed:
+            reconnect_event.set()
+        return jsonify({
+            "ok": True,
+            "reconnect_needed": reconnect_needed,
+            "restart_required": restart_required,
+            "config": merged,
+        })
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+# ---------- shutdown ----------
+def stop_handler(signum, frame):
+    global running
+    running = False
+    close_iface()
+    os._exit(0)
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Meshtastic local web chat")
+    parser.add_argument("--config", default=str(DEFAULT_CONFIG_PATH), help="Path to app config JSON")
+    parser.add_argument("--node-host", help="TCP host of node")
+    parser.add_argument("--node-port", help="Serial port of node, e.g. /dev/ttyUSB0")
+    parser.add_argument("--listen-host", help="HTTP listen host")
+    parser.add_argument("--listen-port", type=int, help="HTTP listen port")
+    parser.add_argument("--channel", type=int, help="Meshtastic channel index")
+    parser.add_argument("--ssl-adhoc", action="store_true", help="Enable ad-hoc SSL")
+    parser.add_argument("--ui-language", choices=["it", "en", "fr"], help="Default UI language")
+    return parser.parse_args()
+
+
+def build_effective_config(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
+    cfg_path = Path(args.config).expanduser().resolve()
+    cfg = load_config(cfg_path)
+    if args.node_host:
+        cfg["node"]["mode"] = "tcp"
+        cfg["node"]["host"] = args.node_host
+        cfg["node"]["port"] = ""
+    if args.node_port:
+        cfg["node"]["mode"] = "serial"
+        cfg["node"]["port"] = args.node_port
+        cfg["node"]["host"] = ""
+    if args.listen_host:
+        cfg["web"]["listen_host"] = args.listen_host
+    if args.listen_port:
+        cfg["web"]["listen_port"] = args.listen_port
+    if args.channel is not None:
+        cfg["node"]["channel"] = args.channel
+    if args.ssl_adhoc:
+        cfg["web"]["ssl_adhoc"] = True
+    if args.ui_language:
+        cfg["ui"]["default_language"] = args.ui_language
+    save_config(cfg_path, cfg)
+    return cfg, cfg_path
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    cfg, cfg_path = build_effective_config(args)
+    set_config(cfg)
+    app.config["CONFIG_PATH"] = str(cfg_path)
 
     signal.signal(signal.SIGINT, stop_handler)
     signal.signal(signal.SIGTERM, stop_handler)
 
     init_db()
+    bootstrap_runtime_from_db()
     pub.subscribe(on_text, "meshtastic.receive.text")
     pub.subscribe(on_receive, "meshtastic.receive")
-    pub.subscribe(on_connection_established, "meshtastic.connection.established")
-    pub.subscribe(on_connection_lost, "meshtastic.connection.lost")
 
-    threading.Thread(target=connector_loop, name="meshtastic-connector", daemon=True).start()
-    threading.Thread(target=cache_worker, name="meshtastic-cache", daemon=True).start()
-    threading.Thread(target=sender_worker, name="meshtastic-sender", daemon=True).start()
+    threading.Thread(target=connection_worker, daemon=True, name="connection-worker").start()
+    threading.Thread(target=cache_worker, daemon=True, name="cache-worker").start()
+    threading.Thread(target=sender_worker, daemon=True, name="sender-worker").start()
 
-    logger.info("Meshtastic Web Chat v%s ready", VERSION)
-    logger.info("Listen on %s:%s", args.listen_host, args.listen_port)
-    logger.info("Backend node: %s -> %s", APP_MODE, APP_TARGET)
+    web_cfg = cfg["web"]
+    ssl_context = "adhoc" if web_cfg.get("ssl_adhoc") else None
+    logger.info("Meshtastic Web Chat v%s starting", VERSION)
+    logger.info("Web UI on %s://%s:%s", "https" if ssl_context else "http", web_cfg.get("listen_host"), web_cfg.get("listen_port"))
+    logger.info("Node mode=%s target=%s", cfg["node"].get("mode"), cfg["node"].get("port") or cfg["node"].get("host"))
 
-    ssl_context = "adhoc" if args.ssl_adhoc else None
-    if args.ssl_adhoc:
-        try:
-            import OpenSSL  # noqa: F401
-        except Exception:
-            logger.warning("PyOpenSSL not available, HTTPS adhoc may fail until installed")
-
-    app.run(host=args.listen_host, port=args.listen_port, debug=False, threaded=True, ssl_context=ssl_context)
-
-
-if __name__ == "__main__":
-    main()
+    app.run(
+        host=web_cfg.get("listen_host", "0.0.0.0"),
+        port=int(web_cfg.get("listen_port", 8088)),
+        debug=False,
+        threaded=True,
+        ssl_context=ssl_context,
+    )

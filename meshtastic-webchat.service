@@ -9,7 +9,7 @@ User=meshtastic
 Group=meshtastic
 WorkingDirectory=/home/meshtastic/meshtastic_webchat
 Environment="PATH=/home/meshtastic/meshtastic_webchat/.venv/bin"
-ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --node-host 192.168.0.18 --listen-host 0.0.0.0 --listen-port 8088 --ssl-adhoc
+ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --config /home/meshtastic/meshtastic_webchat/app_config.json
 Restart=always
 RestartSec=5
 
