@@ -1,123 +1,271 @@
 # Meshtastic Web Chat
 
-**Package version:** v0.3.5  
-**Internal folder path:** `meshtastic_webchat`  
-**Service name:** `meshtastic-webchat.service`
+**Version / Versione:** `0.4.0`  
+**Internal folder path / Cartella interna:** `meshtastic_webchat`  
+**Service name / Nome servizio:** `meshtastic-webchat.service`
+
+A coherent single-service Meshtastic web chat package with:
+
+- a single application path: `meshtastic_webchat`
+- a single systemd service: `meshtastic-webchat.service`
+- configuration stored in `app_config.json`
+- direct connection to one Meshtastic node (serial or TCP)
+- HTTPS adhoc support
+- configuration export/import from the UI
+- Italian, English, and French interface
 
 ---
 
-## ITA — Panoramica
+## ENGLISH
 
-Meshtastic Web Chat è una web UI locale per leggere e inviare messaggi Meshtastic dal browser.
+### What this package does
 
-Questa applicazione gira come **unico servizio** (`meshtastic-webchat.service`) dentro la cartella `meshtastic_webchat` e fa da **gateway web** tra il nodo Meshtastic e uno o più browser.
+This package provides a lightweight web interface for one Meshtastic node.
 
-### A cosa serve la funzione gateway/proxy integrata
+It can connect in one of two ways:
 
-L'applicazione mantiene **una sola connessione diretta** al nodo Meshtastic (via TCP oppure seriale) e poi espone una UI web locale.
+- **serial mode** using a device such as `/dev/ttyUSB0`
+- **tcp mode** using a node IP/hostname such as `192.168.0.18`
 
-Questo aiuta a:
+The application stores messages locally in SQLite and exposes a simple web UI for:
 
-- ridurre i problemi quando più client si collegano direttamente allo stesso nodo;
-- centralizzare storico, statistiche e debug;
-- usare più browser senza aprire più connessioni dirette al nodo;
-- importare/esportare facilmente la configurazione dell'app.
+- reading saved chat messages
+- sending broadcast or direct messages
+- checking current backend status
+- seeing known nodes
+- exporting and importing application configuration
 
-Questa app **non è un virtual node completo compatibile con l'app mobile ufficiale**. È una web UI/gateway locale pensata per stabilità e gestione semplificata.
+### Important note about TCP nodes
 
----
+For some nodes, especially Wi-Fi/TCP-only devices, the Meshtastic TCP session can be less stable than serial.
 
-## ENG — Overview
+This package is designed to stay coherent and easy to operate, but it still uses a **single direct connection** to the node. Do not connect many direct clients to the same node at the same time.
 
-Meshtastic Web Chat is a local web UI to read and send Meshtastic messages from a browser.
+### Files included
 
-This application runs as a **single service** (`meshtastic-webchat.service`) inside the `meshtastic_webchat` folder and acts as a **web gateway** between the Meshtastic node and one or more browsers.
+```text
+meshtastic_webchat/
+├── app.py
+├── app_config.json
+├── meshtastic-webchat.service
+├── README.md
+├── README.txt
+├── docs/
+│   └── screenshot-ui-v0.3.5.jpg
+└── templates/
+    └── index.html
+```
 
-### What the integrated gateway/proxy role is for
+### Installation
 
-The application keeps **one direct connection** to the Meshtastic node (via TCP or serial) and then exposes a local web UI.
-
-This helps to:
-
-- reduce issues when multiple clients connect directly to the same node;
-- centralize history, statistics, and debug information;
-- allow multiple browsers without opening multiple direct node connections;
-- easily import/export application configuration.
-
-This app is **not a full virtual node compatible with the official mobile app**. It is a local web UI/gateway focused on stability and simpler operations.
-
----
-
-## Features / Funzionalità
-
-- Browser UI for chat / Interfaccia browser per chat
-- Integrated gateway / Gateway integrato
-- TCP node support / Supporto nodo TCP
-- Serial node support / Supporto nodo seriale
-- Message history in SQLite / Storico messaggi in SQLite
-- JSONL raw message log / Log messaggi JSONL
-- Right sidebar statistics / Statistiche nella sidebar destra
-- Debug endpoint `/api/debug`
-- Config export/import endpoints / Esportazione e importazione configurazione
-- UI languages: Italian, English, French / Lingue UI: italiano, inglese, francese
-- Optional ad-hoc HTTPS / HTTPS adhoc opzionale
-
----
-
-## Requirements / Requisiti
-
-- Python 3.11+ recommended
-- A Meshtastic node reachable via:
-  - TCP/IP (`host`)
-  - or serial (`port`)
-- Linux recommended for systemd deployment
-
----
-
-## Installation / Installazione
-
-### 1. Create a virtual environment / Crea un ambiente virtuale
+Create the target directory and extract the package there.
 
 ```bash
+sudo mkdir -p /home/meshtastic
 cd /home/meshtastic
-mkdir -p meshtastic_webchat
-cd meshtastic_webchat
+unzip meshtastic_webchat_v0.4.0_single_service_appconfig_coherent.zip
+```
+
+Create the virtual environment:
+
+```bash
+cd /home/meshtastic/meshtastic_webchat
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install flask meshtastic pypubsub pyopenssl
+python -m pip install flask meshtastic pypubsub
+python -m pip install pyopenssl
 ```
 
-If you do not want HTTPS ad-hoc, `pyopenssl` is optional.
+### Configure `app_config.json`
 
----
-
-### 2. Copy files / Copia i file
-
-Copy into `/home/meshtastic/meshtastic_webchat`:
-
-- `app.py`
-- `app_config.json`
-- `meshtastic-webchat.service`
-- `templates/index.html`
-- `README.md`
-- `README.txt`
-
----
-
-## Configuration / Configurazione
-
-The main configuration file is:
-
-```text
-/home/meshtastic/meshtastic_webchat/app_config.json
-```
-
-Example:
+Default **serial** example:
 
 ```json
 {
-  "version": "0.3.5",
+  "version": "0.4.0",
+  "node": {
+    "mode": "serial",
+    "host": "",
+    "port": "/dev/ttyUSB0",
+    "channel": 0
+  },
+  "web": {
+    "listen_host": "0.0.0.0",
+    "listen_port": 8088,
+    "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "it"
+  }
+}
+```
+
+TCP example:
+
+```json
+{
+  "version": "0.4.0",
+  "node": {
+    "mode": "tcp",
+    "host": "192.168.0.18",
+    "port": "",
+    "channel": 0
+  },
+  "web": {
+    "listen_host": "0.0.0.0",
+    "listen_port": 8088,
+    "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "en"
+  }
+}
+```
+
+### Start manually
+
+```bash
+cd /home/meshtastic/meshtastic_webchat
+source .venv/bin/activate
+python app.py --config /home/meshtastic/meshtastic_webchat/app_config.json
+```
+
+### systemd
+
+Install the service file:
+
+```bash
+sudo cp /home/meshtastic/meshtastic_webchat/meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
+sudo systemctl daemon-reload
+sudo systemctl enable meshtastic-webchat
+sudo systemctl start meshtastic-webchat
+```
+
+Check status:
+
+```bash
+sudo systemctl status meshtastic-webchat
+journalctl -u meshtastic-webchat -f
+```
+
+### Web UI features
+
+- status line with current mode/target/channel
+- message history
+- direct destination field
+- language selector (IT/EN/FR)
+- export config
+- import config
+- clear history
+- known nodes list
+- right sidebar statistics
+
+### API endpoints
+
+- `/api/status`
+- `/api/messages`
+- `/api/nodes`
+- `/api/send`
+- `/api/clear`
+- `/api/debug`
+- `/api/config`
+
+### Troubleshooting
+
+If you use **serial**, ensure the `meshtastic` user can access the device:
+
+```bash
+sudo usermod -a -G dialout meshtastic
+```
+
+Then re-login or reboot.
+
+If you change code and want a clean restart:
+
+```bash
+sudo systemctl stop meshtastic-webchat
+find /home/meshtastic/meshtastic_webchat -type d -name '__pycache__' -exec rm -rf {} +
+sudo systemctl start meshtastic-webchat
+```
+
+---
+
+## ITALIANO
+
+### Cosa fa questo pacchetto
+
+Questo pacchetto fornisce una web chat leggera per un singolo nodo Meshtastic.
+
+Può collegarsi in due modi:
+
+- **seriale** usando una porta tipo `/dev/ttyUSB0`
+- **tcp** usando IP/hostname del nodo, per esempio `192.168.0.18`
+
+L'applicazione salva i messaggi localmente in SQLite ed espone una UI web per:
+
+- leggere i messaggi di chat salvati
+- inviare messaggi broadcast o diretti
+- controllare lo stato del backend
+- vedere i nodi noti
+- esportare e importare la configurazione dell'applicazione
+
+### Nota importante sui nodi TCP
+
+Per alcuni nodi, soprattutto quelli solo Wi-Fi/TCP, la sessione Meshtastic su TCP può essere meno stabile rispetto alla seriale.
+
+Questo pacchetto è pensato per essere coerente e facile da gestire, ma usa comunque **una sola connessione diretta** al nodo. Evita di collegare più client diretti allo stesso nodo contemporaneamente.
+
+### Installazione
+
+Crea la cartella di destinazione ed estrai il pacchetto:
+
+```bash
+sudo mkdir -p /home/meshtastic
+cd /home/meshtastic
+unzip meshtastic_webchat_v0.4.0_single_service_appconfig_coherent.zip
+```
+
+Crea il virtual environment:
+
+```bash
+cd /home/meshtastic/meshtastic_webchat
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install flask meshtastic pypubsub
+python -m pip install pyopenssl
+```
+
+### Configurazione tramite `app_config.json`
+
+Esempio seriale predefinito:
+
+```json
+{
+  "version": "0.4.0",
+  "node": {
+    "mode": "serial",
+    "host": "",
+    "port": "/dev/ttyUSB0",
+    "channel": 0
+  },
+  "web": {
+    "listen_host": "0.0.0.0",
+    "listen_port": 8088,
+    "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "it"
+  }
+}
+```
+
+Per usare il nodo su TCP, imposta:
+
+```json
+{
+  "version": "0.4.0",
   "node": {
     "mode": "tcp",
     "host": "192.168.0.18",
@@ -135,18 +283,7 @@ Example:
 }
 ```
 
-### Notes / Note
-
-- `node.mode` can be `tcp` or `serial`
-- for `tcp`, use `host`
-- for `serial`, use `port`
-- `ssl_adhoc: true` enables self-signed HTTPS
-
----
-
-## Manual startup / Avvio manuale
-
-### TCP node
+### Avvio manuale
 
 ```bash
 cd /home/meshtastic/meshtastic_webchat
@@ -154,218 +291,60 @@ source .venv/bin/activate
 python app.py --config /home/meshtastic/meshtastic_webchat/app_config.json
 ```
 
-### Serial node
+### systemd
 
-Edit `app_config.json`:
-
-```json
-"node": {
-  "mode": "serial",
-  "host": "",
-  "port": "/dev/ttyUSB0",
-  "channel": 0
-}
-```
-
-Then start the same way.
-
-### One-shot CLI override examples
+Installa il file di servizio:
 
 ```bash
-python app.py --node-host 192.168.0.18
-python app.py --node-port /dev/ttyUSB0
-python app.py --node-host 192.168.0.18 --ssl-adhoc
-```
-
-These override the config file and save the updated values back to `app_config.json`.
-
----
-
-## systemd setup
-
-Install the service file:
-
-```bash
-sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
+sudo cp /home/meshtastic/meshtastic_webchat/meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
 sudo systemctl daemon-reload
 sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 ```
 
-Check status:
+Log e stato:
 
 ```bash
 sudo systemctl status meshtastic-webchat
-```
-
-View logs:
-
-```bash
 journalctl -u meshtastic-webchat -f
 ```
 
-If using serial, ensure the `meshtastic` user can access the serial port:
+### Funzioni della UI
+
+- stato backend con modo/target/canale
+- storico messaggi
+- campo destinazione per messaggi diretti
+- selettore lingua (IT/EN/FR)
+- esporta configurazione
+- importa configurazione
+- pulizia storico
+- elenco nodi noti
+- sidebar destra con statistiche
+
+### Endpoint disponibili
+
+- `/api/status`
+- `/api/messages`
+- `/api/nodes`
+- `/api/send`
+- `/api/clear`
+- `/api/debug`
+- `/api/config`
+
+### Risoluzione problemi
+
+Se usi la **seriale**, assicurati che l'utente `meshtastic` abbia accesso alla porta:
 
 ```bash
 sudo usermod -a -G dialout meshtastic
 ```
 
----
+Poi fai logout/login oppure riavvia.
 
-## Web UI usage / Uso interfaccia web
-
-Open the UI:
-
-### HTTP
-
-```text
-http://IP_DEL_SERVER:8088
-```
-
-### HTTPS ad-hoc
-
-```text
-https://IP_DEL_SERVER:8088
-```
-
-The browser will warn about a self-signed certificate. This is expected.
-
-### Main actions / Azioni principali
-
-- send broadcast messages / invio broadcast
-- send direct messages by destination ID / invio diretto con ID destinazione
-- see known nodes / vedere nodi noti
-- see message history / vedere storico messaggi
-- clear stored history / pulire storico locale
-- switch UI language IT/EN/FR / cambiare lingua UI IT/EN/FR
-- export app config / esportare configurazione app
-- import app config / importare configurazione app
-
-### Import/export configuration
-
-Buttons in the top bar:
-
-- **Export config** downloads the current effective app configuration as JSON
-- **Import config** uploads a JSON config file
-
-After import:
-
-- if node mode/target/channel changes, the backend requests a reconnect;
-- if listen host/port or SSL changes, a restart is required.
-
----
-
-## API endpoints
-
-### `GET /api/status`
-Basic status and effective configuration.
-
-### `GET /api/messages`
-Returns stored messages.
-
-### `GET /api/nodes`
-Returns cached node list.
-
-### `GET /api/stats`
-Returns UI statistics and health data.
-
-### `GET /api/debug`
-Returns extended debug information:
-
-- version
-- config snapshot
-- runtime counters
-- cached health
-- cached local stats
-- recent messages
-
-### `POST /api/send`
-Send a message.
-
-Request body example:
-
-```json
-{
-  "text": "hello",
-  "dest": "!9ee783b4"
-}
-```
-
-Leave `dest` empty for broadcast.
-
-### `POST /api/clear`
-Clear local message history.
-
-### `GET /api/config/export`
-Download current config JSON.
-
-### `POST /api/config/import`
-Import a config JSON file.
-
----
-
-## Files created at runtime
-
-Inside `meshtastic_webchat`:
-
-- `messages.db` → SQLite history
-- `messages.jsonl` → raw JSONL message log
-- `app_config.json` → persistent application config
-
----
-
-## Notes about stability / Note sulla stabilità
-
-### ITA
-
-Se possibile, evita di avere troppi client che si collegano direttamente allo stesso nodo Meshtastic via TCP. Questa applicazione è pensata per essere il punto web centrale verso il nodo.
-
-### ENG
-
-If possible, avoid having too many clients connect directly to the same Meshtastic TCP node. This application is intended to be the central web-facing gateway for the node.
-
----
-
-## Troubleshooting
-
-### The UI opens but does not update
-
-Check service logs:
+Per un riavvio pulito dopo modifiche al codice:
 
 ```bash
-journalctl -u meshtastic-webchat -f
+sudo systemctl stop meshtastic-webchat
+find /home/meshtastic/meshtastic_webchat -type d -name '__pycache__' -exec rm -rf {} +
+sudo systemctl start meshtastic-webchat
 ```
-
-Check debug endpoint:
-
-```bash
-curl -k https://127.0.0.1:8088/api/debug
-```
-
-Or without HTTPS:
-
-```bash
-curl http://127.0.0.1:8088/api/debug
-```
-
-### Serial mode cannot open the port
-
-Check if another process is already using the serial device.
-
-### The imported config does not fully apply
-
-If web listen host/port or SSL changed, restart the service.
-
----
-
-## Version history / Storico versione
-
-### v0.3.5
-
-- added `/api/debug`
-- added configuration export/import
-- added persistent `app_config.json`
-- added French UI language
-- cleaned up single-service deployment model
-- updated README and installation instructions
-

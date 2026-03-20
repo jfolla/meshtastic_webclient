@@ -5,90 +5,89 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meshtastic Web Chat</title>
   <style>
-    body { font-family: system-ui, sans-serif; margin: 0; background: #111827; color: #e5e7eb; }
-    .wrap { max-width: 1280px; margin: 0 auto; padding: 16px; }
-    .top { display: flex; gap: 12px; flex-wrap: wrap; align-items: stretch; margin-bottom: 16px; }
-    .card { background: #1f2937; border: 1px solid #374151; border-radius: 12px; padding: 12px; }
-    .status { font-size: 14px; color: #cbd5e1; }
-    .layout { display: grid; grid-template-columns: 1fr 360px; gap: 16px; }
-    .messages { height: 60vh; overflow-y: auto; padding: 12px; }
-    .msg { padding: 8px 10px; border-radius: 10px; margin-bottom: 10px; white-space: pre-wrap; }
-    .msg.in { background: #0f172a; }
-    .msg.out { background: #1d4ed8; color: white; }
-    .meta { font-size: 12px; opacity: .8; margin-bottom: 4px; }
-    .controls { display: grid; grid-template-columns: 1fr 200px 120px; gap: 8px; margin-top: 12px; }
-    input, button, select { border-radius: 10px; border: 1px solid #475569; padding: 10px 12px; background: #0f172a; color: #e5e7eb; }
-    button { cursor: pointer; background: #2563eb; border-color: #2563eb; }
-    button.secondary { background: #374151; border-color: #475569; }
-    .side h3 { margin-top: 0; margin-bottom: 10px; }
-    .side section + section { margin-top: 16px; }
-    .node { padding: 8px; border-bottom: 1px solid #334155; cursor: pointer; }
-    .node small { display: block; color: #94a3b8; }
-    .hint { color: #94a3b8; font-size: 13px; margin-top: 8px; }
-    .stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .stat { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 10px; }
-    .stat .label { font-size: 12px; color: #94a3b8; margin-bottom: 4px; }
-    .stat .value { font-size: 18px; font-weight: 700; }
-    .stat .sub { font-size: 12px; color: #94a3b8; margin-top: 2px; }
-    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-    .top-actions { display:flex; gap:8px; flex-wrap: wrap; align-items:center; }
-    .file-input { max-width: 220px; }
-    .version { font-size:12px; color:#94a3b8; }
-    @media (max-width: 900px) {
-      .layout { grid-template-columns: 1fr; }
-      .controls { grid-template-columns: 1fr; }
-      .stat-grid { grid-template-columns: 1fr 1fr; }
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --panel2: #111827; --text: #e5e7eb;
+      --muted: #94a3b8; --accent: #4267e7; --border: #334155;
     }
-    @media (max-width: 520px) {
-      .stat-grid { grid-template-columns: 1fr; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: system-ui, sans-serif; }
+    .wrap { max-width: 1500px; margin: 0 auto; padding: 20px; }
+    .topbar { display:grid; grid-template-columns: 1.3fr 2.2fr; gap:16px; margin-bottom: 16px; }
+    .card { background: rgba(30,41,59,.9); border:1px solid var(--border); border-radius:16px; padding:16px; }
+    .title { font-size: 20px; font-weight: 700; }
+    .subtitle { color: var(--muted); margin-top: 6px; }
+    .toolbar { display:flex; gap:10px; flex-wrap: wrap; align-items:center; }
+    select,input,button { background: var(--panel2); color: var(--text); border:1px solid #475569; border-radius:12px; padding:10px 12px; font-size:15px; }
+    button { cursor:pointer; background: #334155; }
+    button.primary { background: var(--accent); border-color: var(--accent); }
+    .layout { display:grid; grid-template-columns: 1fr 380px; gap:16px; }
+    .messages { min-height: 560px; max-height: 68vh; overflow-y:auto; padding:8px; }
+    .msg { padding: 10px 12px; border-radius: 12px; margin-bottom: 10px; background: #0b1222; }
+    .msg.out { background: #2c4ee8; color: white; }
+    .meta { font-size: 12px; opacity:.85; margin-bottom:4px; }
+    .composer { display:grid; grid-template-columns: 1fr 220px 120px; gap:8px; margin-top:14px; }
+    .hint { color: var(--muted); font-size: 13px; margin-top: 10px; }
+    .side h3 { margin: 0 0 12px; font-size: 18px; }
+    .stats { display:grid; grid-template-columns: 1fr 1fr; gap:10px; }
+    .stat { background:#0b1229; border:1px solid #22304a; border-radius:12px; padding:12px; min-height: 86px; }
+    .stat-label { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+    .stat-value { font-size: 18px; font-weight: 700; word-break: break-word; }
+    .nodes { margin-top: 16px; max-height: 260px; overflow-y:auto; border-top:1px solid var(--border); padding-top:12px; }
+    .node { padding:8px 0; border-bottom:1px solid #27364f; cursor:pointer; }
+    .node small { display:block; color: var(--muted); }
+    @media (max-width: 1100px) {
+      .topbar,.layout { grid-template-columns: 1fr; }
+      .composer { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <div class="top">
-      <div class="card" style="flex:1 1 320px;">
-        <div><strong data-i18n="title">Meshtastic Web Chat</strong> <span id="versionLabel" class="version"></span></div>
-        <div id="status" class="status">Loading…</div>
-      </div>
+    <div class="topbar">
       <div class="card">
-        <div class="top-actions">
-          <select id="langSelect">
-            <option value="it">Italiano</option>
-            <option value="en">English</option>
-            <option value="fr">Français</option>
-          </select>
-          <button class="secondary" id="refreshBtn" data-i18n="refresh">Refresh</button>
-          <button class="secondary" id="clearBtn" data-i18n="clearHistory">Clear history</button>
-          <button class="secondary" id="exportCfgBtn" data-i18n="exportConfig">Export config</button>
-          <input class="file-input" id="importCfgFile" type="file" accept="application/json,.json">
-          <button class="secondary" id="importCfgBtn" data-i18n="importConfig">Import config</button>
-        </div>
+        <div class="title">Meshtastic Web Chat <span style="color:#94a3b8;font-size:16px;">v{{ version }}</span></div>
+        <div id="statusLine" class="subtitle">Loading…</div>
+      </div>
+      <div class="card toolbar">
+        <select id="langSelect">
+          <option value="it">Italiano</option>
+          <option value="en">English</option>
+          <option value="fr">Français</option>
+        </select>
+        <button id="refreshBtn" data-i18n="refresh">Aggiorna</button>
+        <button id="clearBtn" data-i18n="clearHistory">Pulisci storico</button>
+        <button id="exportBtn" data-i18n="exportConfig">Esporta config</button>
+        <input type="file" id="importFile">
+        <button id="importBtn" data-i18n="importConfig">Importa config</button>
       </div>
     </div>
 
     <div class="layout">
       <div class="card">
         <div id="messages" class="messages"></div>
-        <div class="controls">
-          <input id="messageInput" type="text" placeholder="Write a message…">
-          <input id="destInput" type="text" placeholder="Optional destination, e.g. !9ee783b4">
-          <button id="sendBtn" data-i18n="send">Send</button>
+        <div class="composer">
+          <input id="messageInput" type="text" data-i18n-placeholder="writeMessage" placeholder="Scrivi un messaggio...">
+          <input id="destInput" type="text" data-i18n-placeholder="optionalDest" placeholder="Dest opzionale, es. !9ee783b4">
+          <button id="sendBtn" class="primary" data-i18n="send">Invia</button>
         </div>
-        <div class="hint" data-i18n="broadcastHint">Leave destination empty to send a broadcast on the current channel.</div>
+        <div class="hint" data-i18n="broadcastHint">Lascia vuoto il destinatario per inviare in broadcast sul canale corrente.</div>
       </div>
 
       <div class="card side">
-        <section>
-          <h3 data-i18n="statistics">Statistics</h3>
-          <div id="stats" class="stat-grid"></div>
-          <div id="statsHint" class="hint"></div>
-        </section>
+        <h3 data-i18n="stats">Statistiche</h3>
+        <div class="stats">
+          <div class="stat"><div class="stat-label" data-i18n="backendConnected">Backend connesso al nodo</div><div id="statConnected" class="stat-value">—</div></div>
+          <div class="stat"><div class="stat-label" data-i18n="lastPacket">Ultimo pacchetto</div><div id="statLastPacket" class="stat-value">—</div></div>
+          <div class="stat"><div class="stat-label" data-i18n="messagesSaved">Messaggi salvati</div><div id="statMessagesSaved" class="stat-value">0</div></div>
+          <div class="stat"><div class="stat-label" data-i18n="messagesReceived">Messaggi ricevuti</div><div id="statMessagesReceived" class="stat-value">0</div></div>
+          <div class="stat"><div class="stat-label" data-i18n="messagesSent">Messaggi inviati</div><div id="statMessagesSent" class="stat-value">0</div></div>
+          <div class="stat"><div class="stat-label" data-i18n="nodesKnown">Nodi noti</div><div id="statNodesKnown" class="stat-value">0</div></div>
+        </div>
 
-        <section>
-          <h3 data-i18n="nodes">Nodes</h3>
+        <div class="nodes">
+          <h3 data-i18n="nodes">Nodi</h3>
           <div id="nodes"></div>
-        </section>
+        </div>
       </div>
     </div>
   </div>
@@ -96,209 +95,167 @@
   <script>
     const I18N = {
       it: {
-        title: 'Meshtastic Web Chat', refresh: 'Aggiorna', clearHistory: 'Pulisci storico', exportConfig: 'Esporta config', importConfig: 'Importa config', send: 'Invia',
-        broadcastHint: 'Lascia il campo destinatario vuoto per inviare in broadcast sul canale corrente.', statistics: 'Statistiche', nodes: 'Nodi',
-        loading: 'Caricamento…', backendConnected: 'Backend connesso al nodo', pingBackend: 'Ping backend', lastPacket: 'Ultimo pacchetto',
-        storedMessages: 'Messaggi salvati', receivedMessages: 'Messaggi ricevuti', sentMessages: 'Messaggi inviati', receivedPackets: 'Pacchetti ricevuti',
-        relayedSeen: 'Pacchetti ruotati visti', multihopSeen: 'Multi-hop visti', badText: 'Pacchetti testo corrotti', sendFailures: 'Invii falliti',
-        knownNodes: 'Nodi noti', queueDepth: 'Coda invio', relayTx: 'Pacchetti ruotati inviati', droppedTx: 'Pacchetti persi',
-        battery: 'Batteria', voltage: 'Tensione', channelUtil: 'Utilizzo canale', airUtil: 'Air Util TX', onlineNodes: 'Nodi online',
-        noMessages: 'Nessun messaggio', noNodes: 'Nessun nodo noto', importedRestart: 'Configurazione importata. Riavvio richiesto per listen host/port o SSL.',
-        importedReconnect: 'Configurazione importata. Riconnessione al nodo richiesta.', importFailed: 'Import fallito', exportStarted: 'Download configurazione avviato.',
-        sendQueued: 'Messaggio messo in coda.', sendFailed: 'Invio fallito', historyCleared: 'Storico pulito.', yes: 'SI', no: 'NO'
+        refresh: "Aggiorna", clearHistory: "Pulisci storico", exportConfig: "Esporta config", importConfig: "Importa config",
+        writeMessage: "Scrivi un messaggio...", optionalDest: "Dest opzionale, es. !9ee783b4", send: "Invia",
+        broadcastHint: "Lascia vuoto il destinatario per inviare in broadcast sul canale corrente.",
+        stats: "Statistiche", backendConnected: "Backend connesso al nodo", lastPacket: "Ultimo pacchetto",
+        messagesSaved: "Messaggi salvati", messagesReceived: "Messaggi ricevuti", messagesSent: "Messaggi inviati",
+        nodesKnown: "Nodi noti", nodes: "Nodi", noMessages: "Nessun messaggio", noNodes: "Nessun nodo noto",
+        connected: "connesso", disconnected: "disconnesso", importSuccess: "Configurazione importata. Il backend proverà a riconnettersi.",
+        importError: "Importazione configurazione fallita", sendError: "Errore invio"
       },
       en: {
-        title: 'Meshtastic Web Chat', refresh: 'Refresh', clearHistory: 'Clear history', exportConfig: 'Export config', importConfig: 'Import config', send: 'Send',
-        broadcastHint: 'Leave destination empty to send a broadcast on the current channel.', statistics: 'Statistics', nodes: 'Nodes',
-        loading: 'Loading…', backendConnected: 'Backend connected to node', pingBackend: 'Backend ping', lastPacket: 'Last packet',
-        storedMessages: 'Stored messages', receivedMessages: 'Received messages', sentMessages: 'Sent messages', receivedPackets: 'Received packets',
-        relayedSeen: 'Relayed packets seen', multihopSeen: 'Multihop seen', badText: 'Corrupted text packets', sendFailures: 'Send failures',
-        knownNodes: 'Known nodes', queueDepth: 'Outbound queue', relayTx: 'Relayed packets sent', droppedTx: 'Dropped packets',
-        battery: 'Battery', voltage: 'Voltage', channelUtil: 'Channel utilization', airUtil: 'Air Util TX', onlineNodes: 'Online nodes',
-        noMessages: 'No messages', noNodes: 'No known nodes', importedRestart: 'Configuration imported. Restart required for listen host/port or SSL.',
-        importedReconnect: 'Configuration imported. Reconnect to node requested.', importFailed: 'Import failed', exportStarted: 'Configuration download started.',
-        sendQueued: 'Message queued.', sendFailed: 'Send failed', historyCleared: 'History cleared.', yes: 'YES', no: 'NO'
+        refresh: "Refresh", clearHistory: "Clear history", exportConfig: "Export config", importConfig: "Import config",
+        writeMessage: "Write a message...", optionalDest: "Optional destination, e.g. !9ee783b4", send: "Send",
+        broadcastHint: "Leave destination empty to broadcast on the current channel.",
+        stats: "Statistics", backendConnected: "Backend connected to node", lastPacket: "Last packet",
+        messagesSaved: "Saved messages", messagesReceived: "Messages received", messagesSent: "Messages sent",
+        nodesKnown: "Known nodes", nodes: "Nodes", noMessages: "No messages", noNodes: "No known nodes",
+        connected: "connected", disconnected: "disconnected", importSuccess: "Configuration imported. Backend will try to reconnect.",
+        importError: "Configuration import failed", sendError: "Send error"
       },
       fr: {
-        title: 'Meshtastic Web Chat', refresh: 'Actualiser', clearHistory: 'Effacer l’historique', exportConfig: 'Exporter config', importConfig: 'Importer config', send: 'Envoyer',
-        broadcastHint: 'Laissez la destination vide pour envoyer en diffusion sur le canal courant.', statistics: 'Statistiques', nodes: 'Nœuds',
-        loading: 'Chargement…', backendConnected: 'Backend connecté au nœud', pingBackend: 'Ping du backend', lastPacket: 'Dernier paquet',
-        storedMessages: 'Messages enregistrés', receivedMessages: 'Messages reçus', sentMessages: 'Messages envoyés', receivedPackets: 'Paquets reçus',
-        relayedSeen: 'Paquets relayés vus', multihopSeen: 'Multi-hop vus', badText: 'Paquets texte corrompus', sendFailures: 'Échecs d’envoi',
-        knownNodes: 'Nœuds connus', queueDepth: 'File d’envoi', relayTx: 'Paquets relayés envoyés', droppedTx: 'Paquets perdus',
-        battery: 'Batterie', voltage: 'Tension', channelUtil: 'Utilisation du canal', airUtil: 'Air Util TX', onlineNodes: 'Nœuds en ligne',
-        noMessages: 'Aucun message', noNodes: 'Aucun nœud connu', importedRestart: 'Configuration importée. Redémarrage requis pour l’hôte/port d’écoute ou SSL.',
-        importedReconnect: 'Configuration importée. Reconnexion au nœud demandée.', importFailed: 'Échec de l’import', exportStarted: 'Téléchargement de la configuration lancé.',
-        sendQueued: 'Message mis en file.', sendFailed: 'Échec de l’envoi', historyCleared: 'Historique effacé.', yes: 'OUI', no: 'NON'
+        refresh: "Actualiser", clearHistory: "Effacer l'historique", exportConfig: "Exporter config", importConfig: "Importer config",
+        writeMessage: "Écrire un message...", optionalDest: "Destination facultative, ex. !9ee783b4", send: "Envoyer",
+        broadcastHint: "Laissez la destination vide pour diffuser sur le canal courant.",
+        stats: "Statistiques", backendConnected: "Backend connecté au nœud", lastPacket: "Dernier paquet",
+        messagesSaved: "Messages enregistrés", messagesReceived: "Messages reçus", messagesSent: "Messages envoyés",
+        nodesKnown: "Nœuds connus", nodes: "Nœuds", noMessages: "Aucun message", noNodes: "Aucun nœud connu",
+        connected: "connecté", disconnected: "déconnecté", importSuccess: "Configuration importée. Le backend va tenter de se reconnecter.",
+        importError: "Échec de l'import de la configuration", sendError: "Erreur d'envoi"
       }
     };
 
-    const messagesEl = document.getElementById('messages');
-    const nodesEl = document.getElementById('nodes');
-    const statusEl = document.getElementById('status');
-    const statsEl = document.getElementById('stats');
-    const statsHintEl = document.getElementById('statsHint');
-    const versionLabel = document.getElementById('versionLabel');
-    const messageInput = document.getElementById('messageInput');
-    const destInput = document.getElementById('destInput');
-    const sendBtn = document.getElementById('sendBtn');
-    const refreshBtn = document.getElementById('refreshBtn');
-    const clearBtn = document.getElementById('clearBtn');
-    const exportCfgBtn = document.getElementById('exportCfgBtn');
-    const importCfgBtn = document.getElementById('importCfgBtn');
-    const importCfgFile = document.getElementById('importCfgFile');
-    const langSelect = document.getElementById('langSelect');
+    let currentLang = localStorage.getItem("meshtastic_lang") || (navigator.language || "en").slice(0,2);
+    if (!I18N[currentLang]) currentLang = "en";
+    document.getElementById("langSelect").value = currentLang;
 
-    let currentLang = localStorage.getItem('mwc_lang') || ((navigator.language || 'it').slice(0,2) in I18N ? (navigator.language || 'it').slice(0,2) : 'en');
-    langSelect.value = currentLang;
-
-    function t(k) { return (I18N[currentLang] && I18N[currentLang][k]) || I18N.en[k] || k; }
+    function t(key) { return (I18N[currentLang] && I18N[currentLang][key]) || I18N.en[key] || key; }
     function applyI18n() {
-      document.documentElement.lang = currentLang;
-      document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
-      messageInput.placeholder = currentLang === 'it' ? 'Scrivi un messaggio…' : currentLang === 'fr' ? 'Écrivez un message…' : 'Write a message…';
-      destInput.placeholder = currentLang === 'it' ? 'Dest opzionale, es. !9ee783b4' : currentLang === 'fr' ? 'Destination optionnelle, ex. !9ee783b4' : 'Optional destination, e.g. !9ee783b4';
+      document.querySelectorAll("[data-i18n]").forEach(el => el.textContent = t(el.dataset.i18n));
+      document.querySelectorAll("[data-i18n-placeholder]").forEach(el => el.placeholder = t(el.dataset.i18nPlaceholder));
+    }
+    function escapeHtml(str) {
+      return String(str).replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&#039;");
     }
 
-    function fmt(v) { return (v === null || v === undefined || v === '') ? '—' : v; }
+    async function loadStatus() {
+      const res = await fetch("/api/status");
+      const data = await res.json();
+      document.getElementById("statusLine").textContent = `${data.mode} → ${data.target} · ch ${data.channel}`;
+      document.getElementById("statConnected").innerHTML = data.backend_connected
+        ? `<span style="color:#bbf7d0;">SI</span><div style="font-size:13px;color:#94a3b8;">${escapeHtml(t("connected"))}</div>`
+        : `<span style="color:#fecaca;">NO</span><div style="font-size:13px;color:#94a3b8;">${escapeHtml(t("disconnected"))}</div>`;
+      document.getElementById("statLastPacket").textContent = data.last_packet_at || "—";
+      document.getElementById("statMessagesSaved").textContent = data.messages_saved ?? 0;
+      document.getElementById("statMessagesReceived").textContent = data.messages_received ?? 0;
+      document.getElementById("statMessagesSent").textContent = data.messages_sent ?? 0;
+      document.getElementById("statNodesKnown").textContent = data.nodes_known ?? 0;
+    }
 
-    function renderMessages(list) {
-      messagesEl.innerHTML = '';
-      if (!list.length) {
-        messagesEl.innerHTML = `<div class="hint">${t('noMessages')}</div>`;
+    async function loadMessages() {
+      const res = await fetch("/api/messages?limit=200");
+      const data = await res.json();
+      const messagesEl = document.getElementById("messages");
+      if (!data.length) {
+        messagesEl.innerHTML = `<div style="color:#94a3b8;">${escapeHtml(t("noMessages"))}</div>`;
         return;
       }
-      list.forEach(m => {
-        const div = document.createElement('div');
-        div.className = `msg ${m.direction}`;
-        div.innerHTML = `<div class="meta">${m.ts} · ${m.from_id || ''} → ${m.to_id || ''}</div><div>${m.text}</div>`;
-        messagesEl.appendChild(div);
-      });
+      messagesEl.innerHTML = data.map(msg => {
+        const cls = msg.direction === "out" ? "out" : "in";
+        return `<div class="msg ${cls}">
+          <div class="meta">${escapeHtml(msg.ts)} · ${escapeHtml(msg.from_id || "")} → ${escapeHtml(msg.to_id || "")}</div>
+          <div>${escapeHtml(msg.text)}</div>
+        </div>`;
+      }).join("");
       messagesEl.scrollTop = messagesEl.scrollHeight;
     }
 
-    function renderNodes(list) {
-      nodesEl.innerHTML = '';
-      if (!list.length) {
-        nodesEl.innerHTML = `<div class="hint">${t('noNodes')}</div>`;
+    async function loadNodes() {
+      const res = await fetch("/api/nodes");
+      const data = await res.json();
+      const nodesEl = document.getElementById("nodes");
+      if (!data.length) {
+        nodesEl.innerHTML = `<div style="color:#94a3b8;">${escapeHtml(t("noNodes"))}</div>`;
         return;
       }
-      list.forEach(n => {
-        const div = document.createElement('div');
-        div.className = 'node';
-        div.innerHTML = `<strong>${n.name}</strong><small class="mono">${n.node_id}</small><small>${n.hw_model || ''}</small>`;
-        div.onclick = () => { destInput.value = n.node_id; };
-        nodesEl.appendChild(div);
+      nodesEl.innerHTML = data.map(node => `
+        <div class="node" data-id="${escapeHtml(node.node_id)}">
+          <strong>${escapeHtml(node.name)}</strong>
+          <small>${escapeHtml(node.node_id)} · ${escapeHtml(node.hw_model || "")}</small>
+        </div>
+      `).join("");
+      document.querySelectorAll(".node").forEach(el => {
+        el.addEventListener("click", () => {
+          document.getElementById("destInput").value = el.dataset.id;
+          document.getElementById("messageInput").focus();
+        });
       });
     }
 
-    function statCard(label, value, sub='') {
-      return `<div class="stat"><div class="label">${label}</div><div class="value">${fmt(value)}</div>${sub ? `<div class="sub">${sub}</div>` : ''}</div>`;
+    async function sendMessage() {
+      const text = document.getElementById("messageInput").value.trim();
+      const dest = document.getElementById("destInput").value.trim();
+      if (!text) return;
+      const res = await fetch("/api/send", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({text, dest})
+      });
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || t("sendError")); return; }
+      document.getElementById("messageInput").value = "";
+      loadMessages();
+      loadStatus();
     }
 
-    function renderStats(s) {
-      const h = s.health || {};
-      const local = s.local || {};
-      statsEl.innerHTML = [
-        statCard(t('backendConnected'), h.backend_connected_to_node ? t('yes') : t('no'), h.detail || ''),
-        statCard(t('pingBackend'), h.probe_latency_ms ? `${h.probe_latency_ms} ms` : '—', h.node_name || ''),
-        statCard(t('lastPacket'), h.last_packet_at || '—'),
-        statCard(t('storedMessages'), s.stored_messages),
-        statCard(t('receivedMessages'), s.received_messages),
-        statCard(t('sentMessages'), s.sent_messages),
-        statCard(t('receivedPackets'), s.received_packets),
-        statCard(t('relayedSeen'), s.relayed_packets_seen),
-        statCard(t('multihopSeen'), s.multihop_packets_seen),
-        statCard(t('badText'), s.bad_text_packets_seen),
-        statCard(t('sendFailures'), s.send_failures),
-        statCard(t('knownNodes'), s.known_nodes),
-        statCard(t('queueDepth'), s.queue_depth),
-        statCard(t('relayTx'), local.num_tx_relay),
-        statCard(t('droppedTx'), local.num_tx_dropped),
-        statCard(t('battery'), local.battery_level),
-        statCard(t('voltage'), local.voltage),
-        statCard(t('channelUtil'), local.channel_utilization),
-        statCard(t('airUtil'), local.air_util_tx),
-        statCard(t('onlineNodes'), local.num_online_nodes, `${fmt(local.num_total_nodes)}`)
-      ].join('');
-      statsHintEl.textContent = `v${s.version || ''}`;
+    async function exportConfig() {
+      const res = await fetch("/api/config");
+      const data = await res.json();
+      const blob = new Blob([JSON.stringify(data, null, 2)], {type: "application/json"});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "app_config.json"; a.click();
+      URL.revokeObjectURL(url);
     }
 
-    async function fetchJson(url, opts) {
-      const r = await fetch(url, opts);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r.json();
+    async function importConfig() {
+      const input = document.getElementById("importFile");
+      if (!input.files.length) return;
+      const text = await input.files[0].text();
+      let payload;
+      try { payload = JSON.parse(text); } catch (e) { alert(t("importError") + ": " + e); return; }
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (!data.ok) { alert(data.error || t("importError")); return; }
+      alert(t("importSuccess"));
+      await loadStatus(); await loadNodes();
     }
 
-    async function refreshAll() {
-      const [status, messages, nodes, stats] = await Promise.all([
-        fetchJson('/api/status'),
-        fetchJson('/api/messages?limit=150'),
-        fetchJson('/api/nodes'),
-        fetchJson('/api/stats'),
-      ]);
-      versionLabel.textContent = `v${status.version}`;
-      statusEl.textContent = `${status.node.mode} → ${status.node.port || status.node.host} · ch ${status.node.channel}`;
-      renderMessages(messages);
-      renderNodes(nodes);
-      renderStats(stats);
-    }
+    document.getElementById("sendBtn").addEventListener("click", sendMessage);
+    document.getElementById("messageInput").addEventListener("keydown", e => { if (e.key === "Enter") sendMessage(); });
+    document.getElementById("refreshBtn").addEventListener("click", async () => { await loadStatus(); await loadNodes(); await loadMessages(); });
+    document.getElementById("clearBtn").addEventListener("click", async () => { await fetch("/api/clear", {method:"POST"}); await loadMessages(); await loadStatus(); });
+    document.getElementById("exportBtn").addEventListener("click", exportConfig);
+    document.getElementById("importBtn").addEventListener("click", importConfig);
+    document.getElementById("langSelect").addEventListener("change", (e) => {
+      currentLang = e.target.value;
+      localStorage.setItem("meshtastic_lang", currentLang);
+      applyI18n(); loadMessages(); loadNodes(); loadStatus();
+    });
 
-    sendBtn.onclick = async () => {
-      try {
-        const text = messageInput.value.trim();
-        if (!text) return;
-        const data = await fetchJson('/api/send', {
-          method: 'POST',
-          headers: {'Content-Type':'application/json'},
-          body: JSON.stringify({text, dest: destInput.value.trim()})
-        });
-        if (data.ok) {
-          messageInput.value = '';
-          await refreshAll();
-        }
-      } catch (e) {
-        alert(`${t('sendFailed')}: ${e.message}`);
-      }
-    };
-
-    clearBtn.onclick = async () => {
-      if (!confirm(t('historyCleared') + '?')) return;
-      await fetchJson('/api/clear', {method:'POST'});
-      await refreshAll();
-    };
-
-    refreshBtn.onclick = refreshAll;
-
-    exportCfgBtn.onclick = () => {
-      window.location = '/api/config/export';
-      setTimeout(() => alert(t('exportStarted')), 100);
-    };
-
-    importCfgBtn.onclick = async () => {
-      const file = importCfgFile.files[0];
-      if (!file) { alert(t('importFailed')); return; }
-      const fd = new FormData();
-      fd.append('file', file);
-      const r = await fetch('/api/config/import', { method: 'POST', body: fd });
-      const data = await r.json();
-      if (!data.ok) { alert(`${t('importFailed')}: ${data.error || 'error'}`); return; }
-      let msg = data.reconnect_needed ? t('importedReconnect') : 'OK';
-      if (data.restart_required) msg += '\n' + t('importedRestart');
-      alert(msg);
-      await refreshAll();
-    };
-
-    langSelect.onchange = () => {
-      currentLang = langSelect.value;
-      localStorage.setItem('mwc_lang', currentLang);
+    async function boot() {
       applyI18n();
-      refreshAll();
-    };
-
-    applyI18n();
-    refreshAll().catch(e => { statusEl.textContent = e.message; });
-    setInterval(() => refreshAll().catch(() => {}), 5000);
+      await loadStatus(); await loadNodes(); await loadMessages();
+      setInterval(loadStatus, 5000);
+      setInterval(loadNodes, 10000);
+      setInterval(loadMessages, 2500);
+    }
+    boot();
   </script>
 </body>
 </html>
