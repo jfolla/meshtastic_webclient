@@ -1,0 +1,4 @@
+Flask>=3.0
+meshtastic>=2.7
+pypubsub>=4.0
+PyOpenSSL>=24.0

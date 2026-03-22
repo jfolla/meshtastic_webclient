@@ -1,3 +1,2 @@
-Meshtastic Web Chat v0.4.3
-
-Please read README.md for the full installation and usage guide.
+See README.md for the full documentation.
+This package version is v0.5.3.

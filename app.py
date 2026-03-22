@@ -1,313 +1,251 @@
-#!/usr/bin/env python3
 from __future__ import annotations
+
 import argparse
 import json
-import os
-import signal
-import sqlite3
+import logging
+import socket
 import threading
-from datetime import datetime
+import time
+from collections import deque
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 from flask import Flask, jsonify, render_template, request
-from pubsub import pub
-import meshtastic.serial_interface
-import meshtastic.tcp_interface
 
-VERSION = "0.4.3"
+VERSION = "0.5.3"
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("meshtastic-webchat")
+
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = BASE_DIR / "messages.db"
-LOG_JSONL = BASE_DIR / "messages.jsonl"
+CONFIG_PATH = BASE_DIR / "app_config.json"
+DB_PATH = BASE_DIR / "messages.jsonl"
 
-app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+app = Flask(__name__)
+cache_lock = threading.Lock()
+messages = deque(maxlen=500)
+nodes_cache: list[dict] = []
+status_cache: dict[str, Any] = {
+    "backend_connected": False,
+    "proxy_connected": False,
+    "proxy_error": None,
+    "last_sync": None,
+    "stats": {},
+}
+current_config: dict[str, Any] = {}
 
-iface = None
-iface_lock = threading.Lock()
-recent_lock = threading.Lock()
-recent_messages = []
-MAX_RECENT = 300
-channel_index = 0
-APP_MODE = "unknown"
-APP_TARGET = ""
-
-
-def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
-
-
-def db_connect():
-    conn = sqlite3.connect(DB_PATH, timeout=5)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=5000")
-    return conn
+I18N = {
+    "en": {"title": "Meshtastic Web Chat", "send": "Send", "message": "Message", "nodes": "Nodes", "stats": "Statistics", "backend": "Backend connected to node", "messages": "Messages", "debug": "Debug", "config": "Configuration", "export": "Export config", "import": "Import config", "language": "Language", "status": "Status", "online": "Yes", "offline": "No", "proxyError": "Proxy error", "lastPacket": "Last packet", "clear": "Clear", "battery": "Battery", "voltage": "Voltage", "relaySeen": "Relay observed", "relayTx": "Relay sent by node", "packetsRx": "Packets received", "packetsBad": "Corrupted packets", "dropped": "Dropped"},
+    "it": {"title": "Meshtastic Web Chat", "send": "Invia", "message": "Messaggio", "nodes": "Nodi", "stats": "Statistiche", "backend": "Backend connesso al nodo", "messages": "Messaggi", "debug": "Debug", "config": "Configurazione", "export": "Esporta config", "import": "Importa config", "language": "Lingua", "status": "Stato", "online": "Sì", "offline": "No", "proxyError": "Errore proxy", "lastPacket": "Ultimo pacchetto", "clear": "Pulisci", "battery": "Batteria", "voltage": "Tensione", "relaySeen": "Relay osservati", "relayTx": "Relay inviati dal nodo", "packetsRx": "Pacchetti ricevuti", "packetsBad": "Pacchetti corrotti", "dropped": "Scartati"},
+    "fr": {"title": "Meshtastic Web Chat", "send": "Envoyer", "message": "Message", "nodes": "Nœuds", "stats": "Statistiques", "backend": "Backend connecté au nœud", "messages": "Messages", "debug": "Debug", "config": "Configuration", "export": "Exporter config", "import": "Importer config", "language": "Langue", "status": "État", "online": "Oui", "offline": "Non", "proxyError": "Erreur proxy", "lastPacket": "Dernier paquet", "clear": "Effacer", "battery": "Batterie", "voltage": "Tension", "relaySeen": "Relais observés", "relayTx": "Relais envoyés par le nœud", "packetsRx": "Paquets reçus", "packetsBad": "Paquets corrompus", "dropped": "Abandonnés"},
+}
 
 
-def init_db():
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute(
-        """
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            ts TEXT NOT NULL,
-            direction TEXT NOT NULL,
-            from_id TEXT,
-            to_id TEXT,
-            text TEXT NOT NULL,
-            raw_json TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+def utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
-def save_message(direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict] = None):
-    payload = {
-        "ts": now_iso(),
-        "direction": direction,
-        "from_id": from_id,
-        "to_id": to_id,
-        "text": text,
-    }
-    raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
+def load_config(path: Path) -> dict[str, Any]:
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-        (payload["ts"], direction, from_id, to_id, text, raw_json),
-    )
-    conn.commit()
-    payload["id"] = cur.lastrowid
-    conn.close()
 
-    with recent_lock:
-        recent_messages.append(payload)
-        if len(recent_messages) > MAX_RECENT:
-            del recent_messages[:-MAX_RECENT]
+def save_config(path: Path, data: dict[str, Any]):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
 
-    with open(LOG_JSONL, "a", encoding="utf-8") as f:
-        json.dump({**payload, "raw_packet": raw_packet}, f, ensure_ascii=False, default=str)
+
+def proxy_request(payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
+    proxy = current_config["proxy"]
+    host = proxy["host"]
+    port = int(proxy["port"])
+    s = socket.create_connection((host, port), timeout=timeout)
+    try:
+        s.settimeout(timeout)
+        f = s.makefile("rwb")
+        # hello
+        _ = f.readline()
+        # initial state
+        _ = f.readline()
+        f.write((json.dumps(payload) + "\n").encode("utf-8"))
+        f.flush()
+        line = f.readline().decode("utf-8").strip()
+        if not line:
+            raise RuntimeError("Empty proxy response")
+        return json.loads(line)
+    finally:
+        s.close()
+
+
+def append_message(msg: dict[str, Any]):
+    with cache_lock:
+        messages.append(msg)
+    with open(DB_PATH, "a", encoding="utf-8") as f:
+        json.dump(msg, f, ensure_ascii=False)
         f.write("\n")
 
-    return payload
 
-
-def decode_text(packet: dict) -> Optional[str]:
-    decoded = packet.get("decoded", {})
-    text = decoded.get("text")
-    if text:
-        return text
-    payload = decoded.get("payload")
-    if isinstance(payload, (bytes, bytearray)):
-        try:
-            return payload.decode("utf-8", errors="replace")
-        except Exception:
-            return repr(payload)
-    return None
-
-
-def on_text(packet, interface=None):
-    text = decode_text(packet)
-    if not text:
+def load_messages():
+    if not DB_PATH.exists():
         return
-    from_id = packet.get("fromId", str(packet.get("from", "unknown")))
-    to_id = packet.get("toId", str(packet.get("to", "^all")))
-    save_message("in", from_id, to_id, text, packet)
+    try:
+        with open(DB_PATH, "r", encoding="utf-8") as f:
+            lines = f.readlines()[-500:]
+        for line in lines:
+            try:
+                messages.append(json.loads(line))
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
-def connect_meshtastic(mode: str, target: str):
-    global iface
-    if mode == "serial":
-        iface = meshtastic.serial_interface.SerialInterface(devPath=target)
-    else:
-        iface = meshtastic.tcp_interface.TCPInterface(hostname=target)
-
-
-def get_nodes():
-    with iface_lock:
-        nodes = getattr(iface, "nodes", {}) or {}
-    out = []
-    for node_id, node in nodes.items():
-        user = node.get("user", {})
-        out.append(
-            {
-                "node_id": node_id,
-                "name": user.get("longName") or user.get("shortName") or node_id,
-                "short_name": user.get("shortName") or "",
-                "hw_model": user.get("hwModel") or "",
-                "last_heard": node.get("lastHeard"),
-            }
-        )
-    out.sort(key=lambda x: (x["name"] or "", x["node_id"]))
-    return out
-
-
-def get_status_payload():
-    return {"ok": True, "version": VERSION, "mode": APP_MODE, "target": APP_TARGET, "channel": channel_index}
+def sync_worker():
+    while True:
+        try:
+            state = proxy_request({"type": "get_state"}, timeout=4)
+            nodes = proxy_request({"type": "get_nodes"}, timeout=4)
+            recent_messages = proxy_request({"type": "get_messages", "limit": 100}, timeout=4)
+            with cache_lock:
+                status_cache["proxy_connected"] = True
+                status_cache["backend_connected"] = bool(state.get("state", {}).get("stats", {}).get("upstream_connected"))
+                status_cache["proxy_error"] = None
+                status_cache["last_sync"] = utc_now()
+                status_cache["stats"] = state.get("state", {}).get("stats", {})
+                nodes_cache.clear()
+                raw_nodes = nodes.get("nodes", {})
+                if isinstance(raw_nodes, dict):
+                    for node_id, node in raw_nodes.items():
+                        user = node.get("user", {}) or {}
+                        nodes_cache.append({
+                            "node_id": node_id,
+                            "name": user.get("longName") or user.get("shortName") or node_id,
+                            "short_name": user.get("shortName", ""),
+                            "hw_model": user.get("hwModel", ""),
+                            "last_heard": node.get("lastHeard"),
+                        })
+                messages.clear()
+                for msg in recent_messages.get("messages", []):
+                    messages.append(msg)
+        except Exception as exc:
+            with cache_lock:
+                status_cache["proxy_connected"] = False
+                status_cache["proxy_error"] = str(exc)
+        time.sleep(5)
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", version=VERSION)
+    return render_template("index.html", version=VERSION, i18n=json.dumps(I18N, ensure_ascii=False))
 
 
 @app.route("/api/status")
 def api_status():
-    return jsonify(get_status_payload())
+    with cache_lock:
+        return jsonify(status_cache)
+
+
+@app.route("/api/stats")
+def api_stats():
+    with cache_lock:
+        return jsonify(status_cache.get("stats", {}))
 
 
 @app.route("/api/messages")
 def api_messages():
-    limit = min(int(request.args.get("limit", 100)), 500)
-    conn = db_connect()
-    cur = conn.cursor()
-    cur.execute("SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?", (limit,))
-    rows = cur.fetchall()
-    conn.close()
-    rows.reverse()
-    return jsonify([
-        {"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5]}
-        for r in rows
-    ])
+    with cache_lock:
+        return jsonify(list(messages))
 
 
 @app.route("/api/nodes")
 def api_nodes():
-    return jsonify(get_nodes())
+    with cache_lock:
+        return jsonify(list(nodes_cache))
+
+
+@app.route("/api/debug")
+def api_debug():
+    with cache_lock:
+        return jsonify({
+            "version": VERSION,
+            "config_path": str(CONFIG_PATH),
+            "proxy": current_config.get("proxy", {}),
+            "node": current_config.get("node", {}),
+            "status": status_cache,
+            "cached_nodes": len(nodes_cache),
+            "cached_messages": len(messages),
+        })
 
 
 @app.route("/api/send", methods=["POST"])
 def api_send():
-    data = request.get_json(force=True, silent=True) or {}
-    text = (data.get("text") or "").strip()
-    dest = (data.get("dest") or "").strip()
+    payload = request.get_json(force=True, silent=True) or {}
+    text = (payload.get("text") or "").strip()
+    destination_id = payload.get("destination_id") or None
     if not text:
-        return jsonify({"ok": False, "error": "Empty message"}), 400
-    with iface_lock:
-        try:
-            kwargs = {"text": text, "wantAck": False, "channelIndex": channel_index}
-            if dest:
-                kwargs["destinationId"] = dest
-            iface.sendText(**kwargs)
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 500
-    msg = save_message("out", "io", dest or "^all", text)
-    return jsonify({"ok": True, "message": msg})
+        return jsonify({"ok": False, "error": "Missing text"}), 400
+    try:
+        resp = proxy_request({"type": "send_text", "text": text, "destination_id": destination_id})
+        append_message({"ts": utc_now(), "direction": "out", "from_id": "me", "to_id": destination_id or "^all", "text": text})
+        return jsonify({"ok": True, "response": resp})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear():
-    conn = db_connect()
-    conn.execute("DELETE FROM messages")
-    conn.commit()
-    conn.close()
-    with recent_lock:
-        recent_messages.clear()
+    try:
+        proxy_request({"type": "clear_messages"})
+    except Exception:
+        pass
+    with cache_lock:
+        messages.clear()
+    try:
+        DB_PATH.unlink(missing_ok=True)
+    except Exception:
+        pass
     return jsonify({"ok": True})
 
 
-def load_config(path: Optional[str]) -> dict:
-    cfg = {}
-    if path:
-        with open(path, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    return cfg
-
-
-def build_settings(args) -> dict:
-    cfg = load_config(args.config)
-    node_cfg = cfg.get("node", {})
-    web_cfg = cfg.get("web", {})
-
-    mode = node_cfg.get("mode")
-    host = node_cfg.get("host") or ""
-    port = node_cfg.get("port") or ""
-    channel = int(node_cfg.get("channel", 0))
-    listen_host = web_cfg.get("listen_host", "127.0.0.1")
-    listen_port = int(web_cfg.get("listen_port", 8088))
-    ssl_adhoc = bool(web_cfg.get("ssl_adhoc", False))
-
-    if args.host:
-        mode = "tcp"
-        host = args.host
-    if args.port:
-        mode = "serial"
-        port = args.port
-    if args.channel is not None:
-        channel = args.channel
-    if args.listen_host:
-        listen_host = args.listen_host
-    if args.listen_port is not None:
-        listen_port = args.listen_port
-    if args.ssl_adhoc:
-        ssl_adhoc = True
-
-    if mode == "serial":
-        if not port:
-            raise SystemExit("serial mode requires node.port or --port")
-        target = port
-    elif mode == "tcp":
-        if not host:
-            raise SystemExit("tcp mode requires node.host or --host")
-        target = host
-    else:
-        raise SystemExit("node.mode must be 'serial' or 'tcp'")
-
-    return {
-        "mode": mode,
-        "target": target,
-        "channel": channel,
-        "listen_host": listen_host,
-        "listen_port": listen_port,
-        "ssl_adhoc": ssl_adhoc,
-    }
-
-
-def stop_handler(signum, frame):
-    try:
-        with iface_lock:
-            if iface is not None:
-                iface.close()
-    except Exception:
-        pass
-    os._exit(0)
+@app.route("/api/config", methods=["GET", "POST"])
+def api_config():
+    global current_config
+    if request.method == "GET":
+        return jsonify(current_config)
+    data = request.get_json(force=True, silent=True) or {}
+    save_config(CONFIG_PATH, data)
+    current_config = data
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Meshtastic local web chat")
-    parser.add_argument("--config", help="Path to JSON config file")
-    parser.add_argument("--port", help="Serial port, e.g. /dev/ttyUSB0")
-    parser.add_argument("--host", help="Node IP/hostname, e.g. 192.168.0.18")
-    parser.add_argument("--listen-host", help="Web listen host")
-    parser.add_argument("--listen-port", type=int, help="Web listen port")
-    parser.add_argument("--channel", type=int, help="Channel index")
-    parser.add_argument("--ssl-adhoc", action="store_true", help="Enable Flask adhoc HTTPS")
+    parser = argparse.ArgumentParser(description="Meshtastic Web Chat")
+    parser.add_argument("--config", default=str(CONFIG_PATH))
+    parser.add_argument("--host")
+    parser.add_argument("--port")
+    parser.add_argument("--listen-host")
+    parser.add_argument("--listen-port", type=int)
+    parser.add_argument("--channel", type=int)
+    parser.add_argument("--ssl-adhoc", action="store_true")
     args = parser.parse_args()
 
-    settings = build_settings(args)
-    APP_MODE = settings["mode"]
-    APP_TARGET = settings["target"]
-    channel_index = settings["channel"]
+    current_config = load_config(Path(args.config))
+    if args.host:
+        current_config["node"]["mode"] = "tcp"
+        current_config["node"]["host"] = args.host
+    if args.port:
+        current_config["node"]["mode"] = "serial"
+        current_config["node"]["port"] = args.port
+    if args.listen_host:
+        current_config["web"]["listen_host"] = args.listen_host
+    if args.listen_port:
+        current_config["web"]["listen_port"] = args.listen_port
+    if args.channel is not None:
+        current_config["node"]["channel"] = args.channel
+    if args.ssl_adhoc:
+        current_config["web"]["ssl_adhoc"] = True
 
-    signal.signal(signal.SIGINT, stop_handler)
-    signal.signal(signal.SIGTERM, stop_handler)
-
-    init_db()
-    pub.subscribe(on_text, "meshtastic.receive.text")
-    connect_meshtastic(APP_MODE, APP_TARGET)
-
-    print(f"Meshtastic Web Chat v{VERSION}")
-    print(f"Backend Meshtastic: {APP_MODE} -> {APP_TARGET}")
-    print(f"Web UI: {'https' if settings['ssl_adhoc'] else 'http'}://{settings['listen_host']}:{settings['listen_port']}")
-
-    if settings["ssl_adhoc"]:
-        try:
-            import OpenSSL  # noqa: F401
-        except Exception as exc:
-            raise SystemExit("ssl_adhoc requires pyopenssl in the active environment") from exc
-        app.run(host=settings["listen_host"], port=settings["listen_port"], debug=False, threaded=True, ssl_context="adhoc")
-    else:
-        app.run(host=settings["listen_host"], port=settings["listen_port"], debug=False, threaded=True)
+    load_messages()
+    threading.Thread(target=sync_worker, daemon=True).start()
+    ssl_context = "adhoc" if current_config.get("web", {}).get("ssl_adhoc") else None
+    app.run(host=current_config["web"]["listen_host"], port=int(current_config["web"]["listen_port"]), ssl_context=ssl_context, threaded=True)

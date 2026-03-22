@@ -8,10 +8,10 @@ Type=simple
 User=meshtastic
 Group=meshtastic
 WorkingDirectory=/home/meshtastic/meshtastic_webchat
-Environment="PATH=/home/meshtastic/meshtastic_webchat/.venv/bin"
-ExecStart=/home/meshtastic/meshtastic_webchat/.venv/bin/python /home/meshtastic/meshtastic_webchat/app.py --config /home/meshtastic/meshtastic_webchat/app_config.json
+ExecStart=/home/meshtastic/meshtastic_webchat/start_webchat.sh
 Restart=always
 RestartSec=5
+KillMode=control-group
 
 [Install]
 WantedBy=multi-user.target
