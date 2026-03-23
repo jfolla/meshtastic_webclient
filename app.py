@@ -1,48 +1,49 @@
+#!/usr/bin/env python3
 from __future__ import annotations
 
 import argparse
 import json
 import logging
 import socket
+import sqlite3
 import threading
 import time
-from collections import deque
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.5.3"
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("meshtastic-webchat")
-
+VERSION = "0.6.0"
 BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"
-DB_PATH = BASE_DIR / "messages.jsonl"
 
-app = Flask(__name__)
+app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("meshtastic_webchat")
+
 cache_lock = threading.Lock()
-messages = deque(maxlen=500)
-nodes_cache: list[dict] = []
-status_cache: dict[str, Any] = {
-    "backend_connected": False,
-    "proxy_connected": False,
-    "proxy_error": None,
-    "last_sync": None,
-    "stats": {},
+proxy_cache: dict[str, Any] = {
+    "status": {
+        "version": VERSION,
+        "backend_connected": False,
+        "proxy_connected": False,
+        "proxy_error": "not initialized",
+        "last_sync": None,
+        "proxy_host": "127.0.0.1",
+        "proxy_port": 4404,
+    },
+    "state": {},
+    "nodes": [],
 }
-current_config: dict[str, Any] = {}
-
-I18N = {
-    "en": {"title": "Meshtastic Web Chat", "send": "Send", "message": "Message", "nodes": "Nodes", "stats": "Statistics", "backend": "Backend connected to node", "messages": "Messages", "debug": "Debug", "config": "Configuration", "export": "Export config", "import": "Import config", "language": "Language", "status": "Status", "online": "Yes", "offline": "No", "proxyError": "Proxy error", "lastPacket": "Last packet", "clear": "Clear", "battery": "Battery", "voltage": "Voltage", "relaySeen": "Relay observed", "relayTx": "Relay sent by node", "packetsRx": "Packets received", "packetsBad": "Corrupted packets", "dropped": "Dropped"},
-    "it": {"title": "Meshtastic Web Chat", "send": "Invia", "message": "Messaggio", "nodes": "Nodi", "stats": "Statistiche", "backend": "Backend connesso al nodo", "messages": "Messaggi", "debug": "Debug", "config": "Configurazione", "export": "Esporta config", "import": "Importa config", "language": "Lingua", "status": "Stato", "online": "Sì", "offline": "No", "proxyError": "Errore proxy", "lastPacket": "Ultimo pacchetto", "clear": "Pulisci", "battery": "Batteria", "voltage": "Tensione", "relaySeen": "Relay osservati", "relayTx": "Relay inviati dal nodo", "packetsRx": "Pacchetti ricevuti", "packetsBad": "Pacchetti corrotti", "dropped": "Scartati"},
-    "fr": {"title": "Meshtastic Web Chat", "send": "Envoyer", "message": "Message", "nodes": "Nœuds", "stats": "Statistiques", "backend": "Backend connecté au nœud", "messages": "Messages", "debug": "Debug", "config": "Configuration", "export": "Exporter config", "import": "Importer config", "language": "Langue", "status": "État", "online": "Oui", "offline": "Non", "proxyError": "Erreur proxy", "lastPacket": "Dernier paquet", "clear": "Effacer", "battery": "Batterie", "voltage": "Tension", "relaySeen": "Relais observés", "relayTx": "Relais envoyés par le nœud", "packetsRx": "Paquets reçus", "packetsBad": "Paquets corrompus", "dropped": "Abandonnés"},
-}
+store_lock = threading.Lock()
+stop_event = threading.Event()
+config_path_runtime = CONFIG_PATH
 
 
-def utc_now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+def now_iso() -> str:
+    return datetime.now().isoformat(timespec="seconds")
 
 
 def load_config(path: Path) -> dict[str, Any]:
@@ -50,202 +51,235 @@ def load_config(path: Path) -> dict[str, Any]:
         return json.load(f)
 
 
-def save_config(path: Path, data: dict[str, Any]):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            ts TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            from_id TEXT,
+            to_id TEXT,
+            text TEXT NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    conn.close()
 
 
-def proxy_request(payload: dict[str, Any], timeout: float = 5.0) -> dict[str, Any]:
-    proxy = current_config["proxy"]
-    host = proxy["host"]
-    port = int(proxy["port"])
-    s = socket.create_connection((host, port), timeout=timeout)
-    try:
-        s.settimeout(timeout)
-        f = s.makefile("rwb")
-        # hello
-        _ = f.readline()
-        # initial state
-        _ = f.readline()
-        f.write((json.dumps(payload) + "\n").encode("utf-8"))
-        f.flush()
-        line = f.readline().decode("utf-8").strip()
-        if not line:
-            raise RuntimeError("Empty proxy response")
-        return json.loads(line)
-    finally:
-        s.close()
+def db_add_message(msg: dict[str, Any]):
+    with store_lock:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute(
+            "INSERT INTO messages (ts, direction, from_id, to_id, text) VALUES (?, ?, ?, ?, ?)",
+            (
+                msg.get("ts") or now_iso(),
+                msg.get("direction") or "in",
+                msg.get("from_id"),
+                msg.get("to_id"),
+                msg.get("text") or "",
+            ),
+        )
+        conn.commit()
+        conn.close()
 
 
-def append_message(msg: dict[str, Any]):
+def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    with store_lock:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        rows = conn.execute(
+            "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        conn.close()
+    rows.reverse()
+    return [
+        {
+            "id": r[0],
+            "ts": r[1],
+            "direction": r[2],
+            "from_id": r[3],
+            "to_id": r[4],
+            "text": r[5],
+        }
+        for r in rows
+    ]
+
+
+def proxy_request(payload: dict[str, Any], timeout: float = 2.0) -> dict[str, Any]:
     with cache_lock:
-        messages.append(msg)
-    with open(DB_PATH, "a", encoding="utf-8") as f:
-        json.dump(msg, f, ensure_ascii=False)
-        f.write("\n")
+        host = proxy_cache["status"]["proxy_host"]
+        port = int(proxy_cache["status"]["proxy_port"])
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+        data = b""
+        while not data.endswith(b"\n"):
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
+    if not data:
+        raise RuntimeError("empty response from proxy")
+    return json.loads(data.decode("utf-8", errors="replace").strip())
 
 
-def load_messages():
-    if not DB_PATH.exists():
-        return
-    try:
-        with open(DB_PATH, "r", encoding="utf-8") as f:
-            lines = f.readlines()[-500:]
-        for line in lines:
-            try:
-                messages.append(json.loads(line))
-            except Exception:
-                pass
-    except Exception:
-        pass
-
-
-def sync_worker():
-    while True:
+def sync_proxy_loop():
+    last_seen_ids: set[int] = set()
+    while not stop_event.is_set():
         try:
-            state = proxy_request({"type": "get_state"}, timeout=4)
-            nodes = proxy_request({"type": "get_nodes"}, timeout=4)
-            recent_messages = proxy_request({"type": "get_messages", "limit": 100}, timeout=4)
+            state_resp = proxy_request({"type": "get_state"})
+            nodes_resp = proxy_request({"type": "get_nodes"})
+            msgs_resp = proxy_request({"type": "get_messages", "limit": 100})
+            state = state_resp.get("state", {})
+            nodes = nodes_resp.get("nodes", [])
+            messages = msgs_resp.get("messages", [])
+
+            for msg in messages:
+                msg_id = msg.get("id")
+                if isinstance(msg_id, int) and msg_id not in last_seen_ids:
+                    db_add_message(msg)
+                    last_seen_ids.add(msg_id)
+            if len(last_seen_ids) > 1000:
+                last_seen_ids = set(sorted(last_seen_ids)[-500:])
+
             with cache_lock:
-                status_cache["proxy_connected"] = True
-                status_cache["backend_connected"] = bool(state.get("state", {}).get("stats", {}).get("upstream_connected"))
-                status_cache["proxy_error"] = None
-                status_cache["last_sync"] = utc_now()
-                status_cache["stats"] = state.get("state", {}).get("stats", {})
-                nodes_cache.clear()
-                raw_nodes = nodes.get("nodes", {})
-                if isinstance(raw_nodes, dict):
-                    for node_id, node in raw_nodes.items():
-                        user = node.get("user", {}) or {}
-                        nodes_cache.append({
-                            "node_id": node_id,
-                            "name": user.get("longName") or user.get("shortName") or node_id,
-                            "short_name": user.get("shortName", ""),
-                            "hw_model": user.get("hwModel", ""),
-                            "last_heard": node.get("lastHeard"),
-                        })
-                messages.clear()
-                for msg in recent_messages.get("messages", []):
-                    messages.append(msg)
+                proxy_cache["state"] = state
+                proxy_cache["nodes"] = nodes
+                proxy_cache["status"]["proxy_connected"] = True
+                proxy_cache["status"]["backend_connected"] = bool(state.get("upstream_connected"))
+                proxy_cache["status"]["proxy_error"] = None
+                proxy_cache["status"]["last_sync"] = now_iso()
         except Exception as exc:
             with cache_lock:
-                status_cache["proxy_connected"] = False
-                status_cache["proxy_error"] = str(exc)
-        time.sleep(5)
+                proxy_cache["status"]["proxy_connected"] = False
+                proxy_cache["status"]["backend_connected"] = False
+                proxy_cache["status"]["proxy_error"] = str(exc)
+                proxy_cache["status"]["last_sync"] = now_iso()
+            logger.warning("Proxy poll failed: %s", exc)
+        time.sleep(3)
 
 
 @app.route("/")
 def index():
-    return render_template("index.html", version=VERSION, i18n=json.dumps(I18N, ensure_ascii=False))
+    return render_template("index.html", version=VERSION)
 
 
 @app.route("/api/status")
 def api_status():
     with cache_lock:
-        return jsonify(status_cache)
+        return jsonify(proxy_cache["status"])
 
 
-@app.route("/api/stats")
-def api_stats():
+@app.route("/api/state")
+def api_state():
     with cache_lock:
-        return jsonify(status_cache.get("stats", {}))
-
-
-@app.route("/api/messages")
-def api_messages():
-    with cache_lock:
-        return jsonify(list(messages))
+        return jsonify(proxy_cache["state"])
 
 
 @app.route("/api/nodes")
 def api_nodes():
     with cache_lock:
-        return jsonify(list(nodes_cache))
+        return jsonify(proxy_cache["nodes"])
 
 
-@app.route("/api/debug")
-def api_debug():
-    with cache_lock:
-        return jsonify({
-            "version": VERSION,
-            "config_path": str(CONFIG_PATH),
-            "proxy": current_config.get("proxy", {}),
-            "node": current_config.get("node", {}),
-            "status": status_cache,
-            "cached_nodes": len(nodes_cache),
-            "cached_messages": len(messages),
-        })
+@app.route("/api/messages")
+def api_messages():
+    limit = int(request.args.get("limit", 100))
+    return jsonify(db_list_messages(limit=limit))
 
 
 @app.route("/api/send", methods=["POST"])
 def api_send():
-    payload = request.get_json(force=True, silent=True) or {}
-    text = (payload.get("text") or "").strip()
-    destination_id = payload.get("destination_id") or None
+    data = request.get_json(force=True, silent=True) or {}
+    text = (data.get("text") or "").strip()
+    dest = (data.get("dest") or "").strip()
     if not text:
-        return jsonify({"ok": False, "error": "Missing text"}), 400
+        return jsonify({"ok": False, "error": "Empty message"}), 400
     try:
-        resp = proxy_request({"type": "send_text", "text": text, "destination_id": destination_id})
-        append_message({"ts": utc_now(), "direction": "out", "from_id": "me", "to_id": destination_id or "^all", "text": text})
-        return jsonify({"ok": True, "response": resp})
+        payload = {"type": "send_text", "text": text}
+        if dest:
+            payload["dest"] = dest
+        resp = proxy_request(payload, timeout=4.0)
+        if resp.get("type") == "error":
+            return jsonify({"ok": False, "error": resp.get("error")}), 500
+        return jsonify({"ok": True})
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 @app.route("/api/clear", methods=["POST"])
 def api_clear():
-    try:
-        proxy_request({"type": "clear_messages"})
-    except Exception:
-        pass
+    with store_lock:
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute("DELETE FROM messages")
+        conn.commit()
+        conn.close()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/debug")
+def api_debug():
     with cache_lock:
-        messages.clear()
+        status = dict(proxy_cache["status"])
+        state = dict(proxy_cache["state"])
+    return jsonify({"version": VERSION, "status": status, "state": state})
+
+
+@app.route("/api/config/export")
+def api_config_export():
+    return send_file(config_path_runtime, as_attachment=True, download_name="app_config.json")
+
+
+@app.route("/api/config/import", methods=["POST"])
+def api_config_import():
+    f = request.files.get("file")
+    if f is None:
+        return jsonify({"ok": False, "error": "Missing file"}), 400
+    raw = f.read()
     try:
-        DB_PATH.unlink(missing_ok=True)
-    except Exception:
-        pass
-    return jsonify({"ok": True})
+        cfg = json.loads(raw.decode("utf-8"))
+    except Exception as exc:
+        return jsonify({"ok": False, "error": f"Invalid JSON: {exc}"}), 400
+    if not isinstance(cfg, dict) or "node" not in cfg or "proxy" not in cfg or "web" not in cfg:
+        return jsonify({"ok": False, "error": "Invalid configuration structure"}), 400
+    with open(config_path_runtime, "w", encoding="utf-8") as out:
+        json.dump(cfg, out, indent=2, ensure_ascii=False)
+    return jsonify({"ok": True, "message": "Configuration imported. Restart the service to apply changes."})
 
 
-@app.route("/api/config", methods=["GET", "POST"])
-def api_config():
-    global current_config
-    if request.method == "GET":
-        return jsonify(current_config)
-    data = request.get_json(force=True, silent=True) or {}
-    save_config(CONFIG_PATH, data)
-    current_config = data
-    return jsonify({"ok": True})
+def main():
+    parser = argparse.ArgumentParser(description="Meshtastic Web Chat")
+    parser.add_argument("--config", required=True, help="Path to app_config.json")
+    args = parser.parse_args()
+
+    global config_path_runtime
+    config_path_runtime = Path(args.config).resolve()
+    cfg = load_config(config_path_runtime)
+
+    proxy_host = cfg["proxy"]["host"]
+    proxy_port = int(cfg["proxy"]["port"])
+    listen_host = cfg["web"]["listen_host"]
+    listen_port = int(cfg["web"]["listen_port"])
+    ssl_adhoc = bool(cfg["web"].get("ssl_adhoc", False))
+
+    with cache_lock:
+        proxy_cache["status"]["proxy_host"] = proxy_host
+        proxy_cache["status"]["proxy_port"] = proxy_port
+
+    init_db()
+    threading.Thread(target=sync_proxy_loop, daemon=True, name="proxy-sync").start()
+
+    logger.info("Starting web chat on %s:%s (proxy %s:%s)", listen_host, listen_port, proxy_host, proxy_port)
+    if ssl_adhoc:
+        app.run(host=listen_host, port=listen_port, ssl_context="adhoc", debug=False, use_reloader=False)
+    else:
+        app.run(host=listen_host, port=listen_port, debug=False, use_reloader=False)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Meshtastic Web Chat")
-    parser.add_argument("--config", default=str(CONFIG_PATH))
-    parser.add_argument("--host")
-    parser.add_argument("--port")
-    parser.add_argument("--listen-host")
-    parser.add_argument("--listen-port", type=int)
-    parser.add_argument("--channel", type=int)
-    parser.add_argument("--ssl-adhoc", action="store_true")
-    args = parser.parse_args()
-
-    current_config = load_config(Path(args.config))
-    if args.host:
-        current_config["node"]["mode"] = "tcp"
-        current_config["node"]["host"] = args.host
-    if args.port:
-        current_config["node"]["mode"] = "serial"
-        current_config["node"]["port"] = args.port
-    if args.listen_host:
-        current_config["web"]["listen_host"] = args.listen_host
-    if args.listen_port:
-        current_config["web"]["listen_port"] = args.listen_port
-    if args.channel is not None:
-        current_config["node"]["channel"] = args.channel
-    if args.ssl_adhoc:
-        current_config["web"]["ssl_adhoc"] = True
-
-    load_messages()
-    threading.Thread(target=sync_worker, daemon=True).start()
-    ssl_context = "adhoc" if current_config.get("web", {}).get("ssl_adhoc") else None
-    app.run(host=current_config["web"]["listen_host"], port=int(current_config["web"]["listen_port"]), ssl_context=ssl_context, threaded=True)
+    main()

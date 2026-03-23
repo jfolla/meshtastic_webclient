@@ -5,103 +5,199 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meshtastic Web Chat</title>
   <style>
-    body{font-family:Arial,sans-serif;margin:0;background:#f5f7fa;color:#1f2937}
-    header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#111827;color:#fff}
-    .wrap{display:grid;grid-template-columns:1fr 320px;gap:16px;padding:16px}
-    .card{background:#fff;border-radius:12px;padding:16px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
-    .messages{height:60vh;overflow:auto;border:1px solid #e5e7eb;border-radius:8px;padding:8px;background:#fafafa}
-    .msg{padding:8px;border-bottom:1px solid #e5e7eb}
-    .meta{font-size:12px;color:#6b7280}
-    .controls{display:flex;gap:8px;margin-top:12px}
-    input,select,button,textarea{font:inherit}
-    textarea{flex:1;min-height:70px;padding:8px}
-    button{padding:8px 12px;border:0;border-radius:8px;background:#2563eb;color:#fff;cursor:pointer}
-    button.secondary{background:#6b7280}
-    .stat{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid #f0f0f0}
-    .section-title{margin:0 0 8px 0;font-size:18px}
-    .toolbar{display:flex;gap:8px;align-items:center}
-    .status-badge{padding:4px 8px;border-radius:999px;background:#e5e7eb;color:#111827;font-size:12px}
-    .status-ok{background:#dcfce7;color:#166534}.status-bad{background:#fee2e2;color:#991b1b}
-    @media (max-width: 960px){.wrap{grid-template-columns:1fr}}
+    :root {
+      --bg: #0b1220;
+      --panel: #121a2b;
+      --panel-2: #182237;
+      --text: #e7ecf5;
+      --muted: #9fb0ca;
+      --accent: #57b3ff;
+      --accent-2: #7cf29a;
+      --border: #26324c;
+      --danger: #ff8d8d;
+      --shadow: 0 10px 30px rgba(0,0,0,.25);
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: linear-gradient(180deg,#0a1020,#0d1527 35%,#0c1422); color: var(--text); font-family: Inter, system-ui, sans-serif; }
+    header { padding: 20px 24px; border-bottom: 1px solid var(--border); background: rgba(7,12,22,.6); backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 10; }
+    header h1 { margin: 0; font-size: 1.4rem; }
+    header p { margin: 6px 0 0; color: var(--muted); font-size: .95rem; }
+    .wrap { display: grid; grid-template-columns: 1.7fr 1fr; gap: 18px; padding: 18px; }
+    .card { background: linear-gradient(180deg,var(--panel),var(--panel-2)); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
+    .section-title { margin: 0 0 14px; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
+    .chat { display: flex; flex-direction: column; min-height: 70vh; }
+    .messages { flex: 1; padding: 18px; overflow: auto; max-height: 72vh; }
+    .bubble { padding: 12px 14px; border-radius: 14px; margin-bottom: 12px; background: rgba(255,255,255,.03); border: 1px solid var(--border); }
+    .bubble.out { background: rgba(87,179,255,.12); border-color: rgba(87,179,255,.35); }
+    .meta { font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
+    .text { white-space: pre-wrap; line-height: 1.45; }
+    .composer { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 16px; border-top: 1px solid var(--border); }
+    input[type=text], input[type=file], textarea { width: 100%; background: rgba(255,255,255,.03); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 12px; }
+    button { border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer; background: var(--accent); color: #031220; font-weight: 700; }
+    button.secondary { background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--border); }
+    .side { padding: 18px; display: grid; gap: 18px; }
+    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .stat { padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.03); }
+    .stat .label { color: var(--muted); font-size: .78rem; margin-bottom: 4px; }
+    .stat .value { font-size: 1.05rem; font-weight: 700; }
+    .ok { color: var(--accent-2); }
+    .bad { color: var(--danger); }
+    ul.nodes { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    ul.nodes li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03); }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+    .hint { color: var(--muted); font-size: .9rem; }
+    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } .chat { min-height: auto; } .messages { max-height: 50vh; } }
   </style>
 </head>
 <body>
-<header>
-  <div>
-    <strong id="title">Meshtastic Web Chat</strong>
-    <span id="version">v{{ version }}</span>
+  <header>
+    <h1>Meshtastic Web Chat</h1>
+    <p>Single-service proxy-first local web interface for Meshtastic nodes.</p>
+  </header>
+  <div class="wrap">
+    <section class="card chat">
+      <div class="messages" id="messages"></div>
+      <div class="composer">
+        <input id="messageInput" type="text" placeholder="Write a broadcast message...">
+        <button id="sendBtn">Send</button>
+      </div>
+    </section>
+    <aside class="card side">
+      <div>
+        <h2 class="section-title">Status</h2>
+        <div class="grid" id="statsGrid"></div>
+        <div class="toolbar">
+          <button class="secondary" id="refreshBtn">Refresh</button>
+          <button class="secondary" id="clearBtn">Clear cache</button>
+        </div>
+      </div>
+      <div>
+        <h2 class="section-title">Nodes</h2>
+        <ul class="nodes" id="nodes"></ul>
+      </div>
+      <div>
+        <h2 class="section-title">Configuration</h2>
+        <div class="toolbar">
+          <button class="secondary" id="exportCfgBtn">Export config</button>
+          <label class="secondary" style="display:inline-flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;">
+            Import config
+            <input id="importCfgInput" type="file" accept="application/json" style="display:none;">
+          </label>
+        </div>
+        <p class="hint">Importing a config replaces <code>app_config.json</code>. Restart the service after import.</p>
+      </div>
+      <div>
+        <h2 class="section-title">Debug</h2>
+        <pre id="debugBox" style="margin:0;white-space:pre-wrap;word-break:break-word;color:var(--muted);"></pre>
+      </div>
+    </aside>
   </div>
-  <div class="toolbar">
-    <label for="lang-select" id="lang-label">Language</label>
-    <select id="lang-select">
-      <option value="en">English</option>
-      <option value="it">Italiano</option>
-      <option value="fr">Français</option>
-    </select>
-  </div>
-</header>
-<div class="wrap">
-  <div class="card">
-    <h2 class="section-title" data-i18n="messages">Messages</h2>
-    <div id="messages" class="messages"></div>
-    <div class="controls">
-      <textarea id="message-input" placeholder="Type a message"></textarea>
-    </div>
-    <div class="controls">
-      <input id="destination-input" placeholder="Optional destination node id">
-      <button id="send-btn" data-i18n="send">Send</button>
-      <button id="clear-btn" class="secondary" data-i18n="clear">Clear</button>
-    </div>
-  </div>
-  <div class="card">
-    <h2 class="section-title" data-i18n="stats">Statistics</h2>
-    <div id="status-badge" class="status-badge">-</div>
-    <div class="stat"><span data-i18n="backend">Backend connected to node</span><strong id="backend-connected">-</strong></div>
-    <div class="stat"><span>Proxy connected</span><strong id="proxy-connected">-</strong></div>
-    <div class="stat"><span data-i18n="proxyError">Proxy error</span><strong id="proxy-error">-</strong></div>
-    <div class="stat"><span data-i18n="lastPacket">Last packet</span><strong id="last-packet">-</strong></div>
-    <div class="stat"><span data-i18n="packetsRx">Packets received</span><strong id="packets-rx">0</strong></div>
-    <div class="stat"><span data-i18n="relaySeen">Relay observed</span><strong id="relay-seen">0</strong></div>
-    <div class="stat"><span data-i18n="relayTx">Relay sent by node</span><strong id="relay-tx">0</strong></div>
-    <div class="stat"><span data-i18n="packetsBad">Corrupted packets</span><strong id="packets-bad">0</strong></div>
-    <div class="stat"><span data-i18n="dropped">Dropped</span><strong id="dropped">0</strong></div>
-    <div class="stat"><span data-i18n="battery">Battery</span><strong id="battery">-</strong></div>
-    <div class="stat"><span data-i18n="voltage">Voltage</span><strong id="voltage">-</strong></div>
-    <h3 class="section-title" data-i18n="nodes">Nodes</h3>
-    <div id="nodes"></div>
-  </div>
-</div>
-<script>
-const I18N = {{ i18n|safe }};
-let currentLang = localStorage.getItem('lang') || navigator.language.slice(0,2) || 'en';
-if (!I18N[currentLang]) currentLang = 'en';
-document.getElementById('lang-select').value = currentLang;
-function t(k){return (I18N[currentLang]||I18N.en)[k] || k;}
-function applyI18n(){document.querySelectorAll('[data-i18n]').forEach(el=>{el.textContent=t(el.dataset.i18n)});document.title=t('title');document.getElementById('title').textContent=t('title');localStorage.setItem('lang',currentLang);} 
-document.getElementById('lang-select').addEventListener('change',e=>{currentLang=e.target.value;applyI18n();});
-applyI18n();
-async function fetchJson(url, options){const r=await fetch(url, options);if(!r.ok) throw new Error(await r.text());return await r.json();}
-function renderMessages(items){const box=document.getElementById('messages');box.innerHTML='';for(const m of items){const div=document.createElement('div');div.className='msg';div.innerHTML=`<div class="meta">${m.ts||''} · ${m.from_id||''} → ${m.to_id||''}</div><div>${(m.text||'').replace(/</g,'&lt;')}</div>`;box.appendChild(div);} box.scrollTop=box.scrollHeight;}
-function renderNodes(items){const box=document.getElementById('nodes');box.innerHTML='';for(const n of items){const div=document.createElement('div');div.className='stat';div.innerHTML=`<span>${n.name||n.node_id}</span><strong>${n.short_name||''}</strong>`;box.appendChild(div);} }
-function setText(id,val){document.getElementById(id).textContent=(val===undefined||val===null||val==='')?'-':String(val);} 
-async function refresh(){try{const [status,stats,msgs,nodes] = await Promise.all([fetchJson('/api/status'),fetchJson('/api/stats'),fetchJson('/api/messages'),fetchJson('/api/nodes')]);
-setText('backend-connected', status.backend_connected ? t('online') : t('offline'));
-setText('proxy-connected', status.proxy_connected ? t('online') : t('offline'));
-setText('proxy-error', status.proxy_error || '-');
-setText('last-packet', stats.last_packet_at || '-');
-setText('packets-rx', stats.packets_rx || 0);
-setText('relay-seen', stats.relay_seen || 0);
-setText('relay-tx', stats.tx_relay || 0);
-setText('packets-bad', stats.packets_rx_bad || 0);
-setText('dropped', stats.tx_dropped || 0);
-setText('battery', stats.battery_level);
-setText('voltage', stats.voltage);
-renderMessages(msgs);renderNodes(nodes);
-const badge=document.getElementById('status-badge');badge.textContent=status.backend_connected ? t('online') : t('offline');badge.className='status-badge ' + (status.backend_connected ? 'status-ok':'status-bad');
-}catch(e){console.error(e)}}
-document.getElementById('send-btn').addEventListener('click', async ()=>{const text=document.getElementById('message-input').value.trim();const destination_id=document.getElementById('destination-input').value.trim();if(!text)return;await fetchJson('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,destination_id:destination_id||null})});document.getElementById('message-input').value='';refresh();});
-document.getElementById('clear-btn').addEventListener('click', async ()=>{await fetchJson('/api/clear',{method:'POST'});refresh();});
-refresh();setInterval(refresh,5000);
-</script>
+  <script>
+    async function getJson(url, opts) {
+      const res = await fetch(url, opts);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      return await res.json();
+    }
+
+    function esc(s) {
+      return String(s ?? "").replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+    }
+
+    function renderMessages(items) {
+      const box = document.getElementById('messages');
+      box.innerHTML = items.map(m => `
+        <div class="bubble ${m.direction === 'out' ? 'out' : ''}">
+          <div class="meta">${esc(m.ts)} · ${esc(m.from_id || '')} → ${esc(m.to_id || '')}</div>
+          <div class="text">${esc(m.text || '')}</div>
+        </div>`).join('');
+      box.scrollTop = box.scrollHeight;
+    }
+
+    function renderNodes(items) {
+      const box = document.getElementById('nodes');
+      if (!items.length) {
+        box.innerHTML = '<li>No nodes cached yet.</li>';
+        return;
+      }
+      box.innerHTML = items.map(n => `<li><strong>${esc(n.name)}</strong><br><span class="hint">${esc(n.node_id)} · ${esc(n.hw_model || '')}</span></li>`).join('');
+    }
+
+    function renderStats(status, state, messages) {
+      const stats = [
+        ['Version', status.version || '-'],
+        ['Proxy', status.proxy_connected ? 'Connected' : 'Disconnected'],
+        ['Backend', status.backend_connected ? 'Connected' : 'Disconnected'],
+        ['Messages cached', messages.length],
+        ['Messages RX', state.messages_rx ?? 0],
+        ['Messages TX', state.messages_tx ?? 0],
+        ['Packets RX seen', state.packets_rx_seen ?? 0],
+        ['Relay seen (estimate)', state.relay_seen_estimate ?? 0],
+        ['Multi-hop seen (estimate)', state.multi_hop_seen_estimate ?? 0],
+        ['Known nodes', (state.nodes || []).length],
+        ['Last sync', status.last_sync || '-'],
+        ['Last packet', state.last_packet_at || '-']
+      ];
+      document.getElementById('statsGrid').innerHTML = stats.map(([k,v]) => `
+        <div class="stat"><div class="label">${esc(k)}</div><div class="value ${String(v).includes('Disconnected') ? 'bad' : ''}">${esc(v)}</div></div>
+      `).join('');
+    }
+
+    async function refreshAll() {
+      const [status, state, nodes, messages, debug] = await Promise.all([
+        getJson('/api/status'),
+        getJson('/api/state'),
+        getJson('/api/nodes'),
+        getJson('/api/messages?limit=100'),
+        getJson('/api/debug')
+      ]);
+      renderMessages(messages);
+      renderNodes(nodes);
+      renderStats(status, state, messages);
+      document.getElementById('debugBox').textContent = JSON.stringify(debug, null, 2);
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', async () => {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+      if (!text) return;
+      await fetch('/api/send', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({text})
+      });
+      input.value = '';
+      await refreshAll();
+    });
+
+    document.getElementById('messageInput').addEventListener('keydown', async (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        document.getElementById('sendBtn').click();
+      }
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', refreshAll);
+    document.getElementById('clearBtn').addEventListener('click', async () => {
+      await fetch('/api/clear', {method: 'POST'});
+      await refreshAll();
+    });
+    document.getElementById('exportCfgBtn').addEventListener('click', () => {
+      window.location.href = '/api/config/export';
+    });
+    document.getElementById('importCfgInput').addEventListener('change', async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/config/import', {method: 'POST', body: fd});
+      const data = await res.json();
+      alert(data.message || data.error || 'Done');
+    });
+
+    refreshAll().catch(console.error);
+    setInterval(() => refreshAll().catch(console.error), 5000);
+  </script>
 </body>
 </html>
