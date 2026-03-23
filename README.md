@@ -1,101 +1,115 @@
 # Meshtastic Web Chat
 
-**Version:** v0.6.0  
-**Internal folder path:** `meshtastic_webchat`  
-**Systemd service:** `meshtastic-webchat.service`
+**Version:** v0.6.4  
+**Package path:** `meshtastic_webchat`  
+**Service name:** `meshtastic-webchat.service`
 
-## Screenshot
+Meshtastic Web Chat is a local browser-based interface for Meshtastic nodes built around a **proxy-first** architecture.
 
-![Meshtastic Web Chat screenshot](docs/screenshot-ui-v0.6.0.jpg)
+The web UI does **not** connect directly to the radio node. Instead, it talks to a local embedded proxy process that owns the single upstream connection to the node. This design improves stability when direct TCP access is fragile or when multiple clients would otherwise interfere with each other.
 
-## Project purpose
+## Project goals
 
-Meshtastic Web Chat is a small local web interface for Meshtastic nodes.
+- provide a simple local web chat for Meshtastic nodes
+- keep deployment simple with a single systemd service
+- avoid direct multi-client access to the node
+- provide a friendlier browser UI with useful status information
+- maintain a local address book that maps `node_id -> alias`
+- support direct messaging without forcing users to remember raw node IDs
 
-This project exists to provide a more practical browser-based chat and monitoring experience, while avoiding the instability that can appear when multiple clients talk directly to a Meshtastic node over TCP at the same time.
+## Key features
 
-## Why this project uses a local proxy
+- single-service startup via `meshtastic-webchat.service`
+- embedded local proxy started automatically by `start_webchat.sh`
+- support for **serial** and **TCP** nodes through `app_config.json`
+- HTTPS via Flask ad-hoc certificates
+- cached messages stored locally in SQLite
+- node list, status, debug endpoint, config export/import
+- local address book (`node_id -> alias`)
+- aliases shown in node list, message list, and recipient selector
+- recipient selector merges **live nodes + address book entries**
+- direct message support from the chat composer
+- GitHub-friendly screenshot and documentation
 
-A single Meshtastic node can become unreliable when several clients compete for the same direct connection, especially over TCP/Wi-Fi.
-
-To make the setup more stable, this project uses a **proxy-first architecture**:
-
-```text
-Meshtastic node <-> local proxy <-> web application
-```
-
-The local proxy keeps **one** direct connection to the node.
-The web application never talks to the node directly.
-Instead, it talks only to the local proxy over `127.0.0.1:4404`.
-
-### Benefits
-
-- one single direct client to the node
-- cleaner isolation between node access and browser UI
-- easier recovery if the upstream node reconnects
-- simpler local API for the web frontend
-- easier path toward future mobile/client compatibility
-
-## Main features
-
-- browser-based Meshtastic chat
-- single-service deployment through `systemd`
-- proxy-first embedded architecture
-- serial and TCP node support
-- local cache of recent messages
-- node list and status overview
-- debug endpoint
-- configuration export and import
-- optional HTTPS with Flask `adhoc` SSL
-- GitHub-ready screenshot and documentation
-
-## Repository layout
+## Architecture
 
 ```text
-meshtastic_webchat/
-├── app.py
-├── app_config.json
-├── start_webchat.sh
-├── meshtastic-webchat.service
-├── requirements.txt
-├── proxy/
-│   ├── __init__.py
-│   └── main.py
-├── templates/
-│   └── index.html
-├── docs/
-│   └── screenshot-ui-v0.6.0.jpg
-└── README.md
+Meshtastic node <-> embedded local proxy <-> web application <-> browser
 ```
 
-## Requirements
+The browser only talks to the web application.
+The web application only talks to the local proxy.
+The local proxy owns the one real connection to the node.
 
-- Linux system with `systemd`
-- Python 3.11+ (tested conceptually with newer Python as well)
-- a Meshtastic node available through:
-  - serial, for example `/dev/ttyUSB0`
-  - or TCP, for example `192.168.0.18`
+## Address book
 
-## Python dependencies
+The address book is a local correlation between a Meshtastic `node_id` and a human-friendly alias.
 
-Install dependencies from `requirements.txt`:
+Examples:
+
+```text
+!9ee86a74 -> OFFICE
+!9ee783b4 -> HOME
+```
+
+This mapping is local to the web application. It does **not** modify the actual Meshtastic node name.
+
+### Why it exists
+
+Meshtastic node IDs are stable but not easy to remember. The address book lets you:
+
+- identify nodes quickly in the UI
+- read messages more easily
+- send direct messages using aliases in the recipient list
+- keep your own naming convention without changing node firmware configuration
+
+## Sending messages
+
+The message composer supports both **broadcast** and **direct messages**.
+
+- Select **Broadcast (^all)** to send to the current mesh channel.
+- Select a specific node from the recipient dropdown to send a direct message.
+- The recipient dropdown merges:
+  - nodes currently visible in proxy cache
+  - entries saved in the local address book
+- Saved aliases are shown before the raw node ID when available.
+
+The application still uses the real Meshtastic `node_id` under the hood. Aliases are only a local UI convenience layer.
+
+## Installation
+
+### 1. Extract the package
+
+Copy the project to:
+
+```text
+/home/meshtastic/meshtastic_webchat
+```
+
+### 2. Create a virtual environment
 
 ```bash
+cd /home/meshtastic/meshtastic_webchat
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
+chmod +x start_webchat.sh
 ```
 
-## Configuration
+### 3. Configure the application
 
-All runtime settings live in `app_config.json`.
+Edit:
 
-### Serial example
+```text
+/home/meshtastic/meshtastic_webchat/app_config.json
+```
+
+#### Serial example
 
 ```json
 {
-  "version": "0.6.0",
+  "version": "0.6.4",
   "node": {
     "mode": "serial",
     "host": "",
@@ -110,15 +124,18 @@ All runtime settings live in `app_config.json`.
     "listen_host": "0.0.0.0",
     "listen_port": 8088,
     "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "en"
   }
 }
 ```
 
-### TCP example
+#### TCP example
 
 ```json
 {
-  "version": "0.6.0",
+  "version": "0.6.4",
   "node": {
     "mode": "tcp",
     "host": "192.168.0.18",
@@ -133,211 +150,112 @@ All runtime settings live in `app_config.json`.
     "listen_host": "0.0.0.0",
     "listen_port": 8088,
     "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "en"
   }
 }
 ```
 
-## Running manually
-
-### 1. Start the virtual environment
+### 4. Install the systemd service
 
 ```bash
-source .venv/bin/activate
-```
-
-### 2. Start everything through the wrapper
-
-```bash
-./start_webchat.sh
-```
-
-The wrapper will:
-
-1. start the local proxy
-2. wait until the proxy answers on `127.0.0.1:4404`
-3. start the Flask web application
-
-## Running with systemd
-
-Install the project under:
-
-```text
-/home/meshtastic/meshtastic_webchat
-```
-
-Copy the service file:
-
-```bash
-sudo cp meshtastic-webchat.service /etc/systemd/system/
-```
-
-Reload systemd and start the service:
-
-```bash
+sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
 sudo systemctl daemon-reload
 sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 ```
 
-Check status:
+### 5. Check logs
 
 ```bash
 sudo systemctl status meshtastic-webchat
 journalctl -u meshtastic-webchat -f
 ```
 
-## Accessing the web UI
+## Usage
 
-If `ssl_adhoc` is enabled:
+Open the UI in your browser:
 
 ```text
 https://YOUR_HOST:8088
 ```
 
-If `ssl_adhoc` is disabled:
+Because ad-hoc HTTPS is enabled by default, your browser will show a certificate warning the first time.
 
-```text
-http://YOUR_HOST:8088
-```
+### Main UI areas
 
-With Flask adhoc SSL, the browser will show a self-signed certificate warning.
-That is expected.
+- **Messages**: cached message history from the proxy
+- **Status**: backend/proxy state and quick counters
+- **Nodes**: known nodes from proxy cache
+- **Address Book**: local `node_id -> alias` mapping
+- **Configuration**: export/import `app_config.json`
+- **Debug**: raw status/state information through `/api/debug`
 
-## How the application works
+### Address book workflow
 
-### `start_webchat.sh`
+1. open the **Address Book** section
+2. enter a `node_id`, for example `!9ee86a74`
+3. enter an alias, for example `OFFICE`
+4. click **Save alias**
 
-This is the only entry point used by the systemd service.
-It reads `app_config.json` indirectly by launching:
+After saving:
+- the node list will prefer the alias
+- messages from or to that node will show the alias first
+- the recipient selector will include that alias even if the node is not currently visible in the live cache
 
-- `python -m proxy.main --config app_config.json`
-- `python app.py --config app_config.json`
+You can also click the **Alias** button next to a node in the node list to prefill the form.
 
-### `proxy/main.py`
+### Direct message workflow
 
-The proxy owns the **only direct connection** to the Meshtastic node.
-It exposes a simple local JSONL API on `127.0.0.1:4404`.
+1. open the **Send to** dropdown in the chat composer
+2. select either:
+   - `Broadcast (^all)`
+   - a live node
+   - an address book alias
+3. type your message
+4. click **Send**
 
-Supported requests:
+You can also click the **Message** button next to an address book entry to preselect that recipient.
 
-- `ping`
-- `get_state`
-- `get_nodes`
-- `get_messages`
-- `send_text`
-- `debug`
+## Files
 
-### `app.py`
+- `app.py` — Flask web application
+- `proxy/main.py` — embedded local proxy
+- `start_webchat.sh` — launcher used by systemd
+- `app_config.json` — runtime configuration
+- `address_book.json` — local alias mapping
+- `webchat_cache.db` — local cached messages
+- `meshtastic-webchat.service` — systemd service unit
+- `docs/screenshot-ui-v0.6.4.jpg` — screenshot used in the README
 
-The Flask application polls only the local proxy.
-It does **not** talk to the Meshtastic node directly.
+## Screenshot
 
-This keeps the browser-facing application simpler and reduces upstream instability exposure.
-
-## Web API routes
-
-### Page
-
-- `GET /`
-
-### Status and cache
-
-- `GET /api/status`
-- `GET /api/state`
-- `GET /api/nodes`
-- `GET /api/messages?limit=100`
-- `GET /api/debug`
-
-### Actions
-
-- `POST /api/send`
-- `POST /api/clear`
-
-### Config export/import
-
-- `GET /api/config/export`
-- `POST /api/config/import`
-
-## Configuration export/import
-
-The web application can export the current `app_config.json` file and import a replacement.
-
-Important:
-- importing a config file updates the file on disk
-- you should restart `meshtastic-webchat.service` after importing a new configuration
-
-## Notes for serial mode
-
-If you use a serial node, make sure the `meshtastic` user can access the device.
-Usually this means adding the user to the `dialout` group:
-
-```bash
-sudo usermod -a -G dialout meshtastic
-```
-
-Then log out and back in, or reboot.
+![Meshtastic Web Chat UI](docs/screenshot-ui-v0.6.4.jpg)
 
 ## Troubleshooting
 
-### The service says the proxy connection is refused
+### Proxy poll failed: connection refused
+The proxy is not running or the local proxy port does not match `app_config.json`.
 
-This usually means the local proxy is not running yet, or the wrapper did not finish startup.
-Check:
+### The web UI loads but shows disconnected state
+The proxy is running, but the proxy cannot reach the configured node.
 
-```bash
-journalctl -u meshtastic-webchat -f
-ss -ltnp | grep 4404
-```
+### Serial mode does not work
+Check that the configured user can access the serial device, usually by being in the `dialout` group.
 
-### TCP mode times out but the node still answers ping
-
-This means the node is alive at the IP layer, but the Meshtastic client session is not stable enough for direct browser-style use.
-That is exactly why this project uses the proxy-first layout.
-
-### Serial mode works, TCP mode is unstable
-
-That usually points to the node-side TCP session, not the web UI.
-The local proxy reduces client-side pressure, but it cannot fix all upstream node firmware or transport issues.
-
-### The browser shows an HTTPS certificate warning
-
-That is expected when `ssl_adhoc` is enabled.
-Flask generates a temporary self-signed certificate.
+### TCP mode times out even though the node IP replies to ping
+This usually indicates a Meshtastic TCP/API-level problem rather than a basic network problem. The proxy-first design reduces the impact of that instability, but the upstream node connection can still fail independently of ICMP reachability.
 
 ## Changelog
 
-### v0.6.0
+### v0.6.4
+- Fixed the direct-message recipient selector so it merges **live nodes + address book entries**.
+- Aliases saved in the address book now appear in the recipient selector even when the node is not currently present in the live proxy cache.
+- Added a **Message** button to address book entries to preselect the direct-message recipient.
+- Updated the README to match the actual recipient-selector behavior and removed older duplicated changelog sections.
 
-- rebuilt from a clean, coherent base
-- single-service deployment through `meshtastic-webchat.service`
-- single internal folder path: `meshtastic_webchat`
-- real config file workflow through `app_config.json`
-- local wrapper `start_webchat.sh`
-- embedded proxy under `proxy/`
-- English-only README
-- screenshot path aligned for GitHub rendering
-- browser UI refreshed and simplified
-- proxy JSONL protocol kept intentionally simple and local-only
-
-## Known limitations
-
-- the local proxy protocol is not yet a full Meshtastic client API replacement
-- the web UI is designed for local deployment, not as a public internet service
-- direct Meshtastic TCP upstream stability still depends on the upstream node and firmware behavior
-- HTTPS uses Flask adhoc SSL, which is convenient but not production-grade TLS
-
-## Recommended GitHub publication workflow
-
-1. extract this package over your existing `meshtastic_webchat` folder
-2. verify `app_config.json`
-3. verify `README.md` screenshot path
-4. test locally
-5. commit and push
-
-Example:
-
-```bash
-git add .
-git commit -m "Release v0.6.0: coherent single-service proxy-first rebuild"
-git push
-```
+### v0.6.3
+- Removed the right-side raw debug text panel to keep the interface cleaner.
+- Made direct messaging clearer by adding a dedicated "Send to" label above the recipient selector.
+- Clarified in the address book section that aliases appear in the direct-message recipient list.

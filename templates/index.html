@@ -31,8 +31,8 @@
     .bubble.out { background: rgba(87,179,255,.12); border-color: rgba(87,179,255,.35); }
     .meta { font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
     .text { white-space: pre-wrap; line-height: 1.45; }
-    .composer { display: grid; grid-template-columns: 1fr auto; gap: 10px; padding: 16px; border-top: 1px solid var(--border); }
-    input[type=text], input[type=file], textarea { width: 100%; background: rgba(255,255,255,.03); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 12px; }
+    .composer { display: grid; grid-template-columns: 280px 1fr auto; gap: 10px; padding: 16px; border-top: 1px solid var(--border); }
+    input[type=text], input[type=file], textarea, select { width: 100%; background: rgba(255,255,255,.03); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 12px; }
     button { border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer; background: var(--accent); color: #031220; font-weight: 700; }
     button.secondary { background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--border); }
     .side { padding: 18px; display: grid; gap: 18px; }
@@ -40,13 +40,15 @@
     .stat { padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.03); }
     .stat .label { color: var(--muted); font-size: .78rem; margin-bottom: 4px; }
     .stat .value { font-size: 1.05rem; font-weight: 700; }
-    .ok { color: var(--accent-2); }
     .bad { color: var(--danger); }
-    ul.nodes { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-    ul.nodes li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03); }
+    ul.nodes, ul.book { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
+    ul.nodes li, ul.book li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03); }
     .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
     .hint { color: var(--muted); font-size: .9rem; }
-    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } .chat { min-height: auto; } .messages { max-height: 50vh; } }
+    .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
+    .muted { color: var(--muted); font-size: .85rem; }
+    .smallbtn { padding: 8px 10px; font-size: .85rem; }
+    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } .chat { min-height: auto; } .messages { max-height: 50vh; } .composer { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
@@ -58,7 +60,13 @@
     <section class="card chat">
       <div class="messages" id="messages"></div>
       <div class="composer">
-        <input id="messageInput" type="text" placeholder="Write a broadcast message...">
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div class="muted" style="font-size:.8rem;">Send to</div>
+          <select id="recipientSelect">
+          <option value="">Broadcast (^all)</option>
+        </select>
+        </div>
+        <input id="messageInput" type="text" placeholder="Write a message...">
         <button id="sendBtn">Send</button>
       </div>
     </section>
@@ -76,6 +84,16 @@
         <ul class="nodes" id="nodes"></ul>
       </div>
       <div>
+        <h2 class="section-title">Address Book</h2>
+        <div class="toolbar">
+          <input id="abNodeId" type="text" placeholder="Node ID, e.g. !9ee86a74">
+          <input id="abAlias" type="text" placeholder="Alias, e.g. OFFICE">
+          <button class="secondary" id="saveAliasBtn">Save alias</button>
+        </div>
+        <p class="hint">Store a local alias for a mesh node ID. The alias is only used by this web UI and appears in the direct-message recipient list.</p>
+        <ul class="book" id="addressBook"></ul>
+      </div>
+      <div>
         <h2 class="section-title">Configuration</h2>
         <div class="toolbar">
           <button class="secondary" id="exportCfgBtn">Export config</button>
@@ -86,18 +104,14 @@
         </div>
         <p class="hint">Importing a config replaces <code>app_config.json</code>. Restart the service after import.</p>
       </div>
-      <div>
-        <h2 class="section-title">Debug</h2>
-        <pre id="debugBox" style="margin:0;white-space:pre-wrap;word-break:break-word;color:var(--muted);"></pre>
-      </div>
     </aside>
   </div>
   <script>
+    let currentNodes = [];
+
     async function getJson(url, opts) {
       const res = await fetch(url, opts);
-      if (!res.ok) {
-        throw new Error(`HTTP ${res.status}`);
-      }
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return await res.json();
     }
 
@@ -105,26 +119,120 @@
       return String(s ?? "").replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
     }
 
+    function nodeDisplay(n) {
+      return n.display_name || n.alias || n.name || n.node_id;
+    }
+
+    function renderRecipientOptions(nodes, addressBook) {
+      const sel = document.getElementById('recipientSelect');
+      const current = sel.value;
+      const merged = new Map();
+
+      for (const n of (nodes || [])) {
+        if (!n.node_id) continue;
+        merged.set(n.node_id, {
+          node_id: n.node_id,
+          alias: n.alias || '',
+          name: n.name || '',
+          display_name: n.display_name || n.alias || n.name || n.node_id,
+          source: 'node'
+        });
+      }
+
+      for (const e of (addressBook || [])) {
+        if (!e.node_id) continue;
+        const existing = merged.get(e.node_id) || { node_id: e.node_id, name: '', display_name: e.node_id, source: 'address_book' };
+        existing.alias = e.alias || existing.alias || '';
+        existing.display_name = e.alias || existing.display_name || e.node_id;
+        merged.set(e.node_id, existing);
+      }
+
+      const opts = ['<option value="">Broadcast (^all)</option>'];
+      const sorted = [...merged.values()].sort((a, b) => (a.display_name || a.node_id).localeCompare(b.display_name || b.node_id));
+      for (const n of sorted) {
+        const title = n.display_name || n.alias || n.name || n.node_id;
+        const meta = n.node_id && n.node_id !== title ? ` (${n.node_id})` : '';
+        opts.push(`<option value="${esc(n.node_id)}">${esc(title + meta)}</option>`);
+      }
+      sel.innerHTML = opts.join('');
+      if ([...sel.options].some(o => o.value === current)) {
+        sel.value = current;
+      }
+      updateComposerPlaceholder();
+    }
+
+    function updateComposerPlaceholder() {
+      const sel = document.getElementById('recipientSelect');
+      const input = document.getElementById('messageInput');
+      const selected = sel.options[sel.selectedIndex]?.text || '';
+      input.placeholder = sel.value ? `Write a direct message to ${selected}...` : 'Write a broadcast message...';
+    }
+
     function renderMessages(items) {
       const box = document.getElementById('messages');
-      box.innerHTML = items.map(m => `
-        <div class="bubble ${m.direction === 'out' ? 'out' : ''}">
-          <div class="meta">${esc(m.ts)} · ${esc(m.from_id || '')} → ${esc(m.to_id || '')}</div>
-          <div class="text">${esc(m.text || '')}</div>
-        </div>`).join('');
+      box.innerHTML = items.map(m => {
+        const fromLabel = m.from_label || m.from_id || '';
+        const toLabel = m.to_label || m.to_id || '';
+        const fromMeta = m.from_id && m.from_id !== fromLabel ? ` (${esc(m.from_id)})` : '';
+        const toMeta = m.to_id && m.to_id !== toLabel ? ` (${esc(m.to_id)})` : '';
+        return `
+          <div class="bubble ${m.direction === 'out' ? 'out' : ''}">
+            <div class="meta">${esc(m.ts)} · ${esc(fromLabel)}${fromMeta} → ${esc(toLabel)}${toMeta}</div>
+            <div class="text">${esc(m.text || '')}</div>
+          </div>`;
+      }).join('');
       box.scrollTop = box.scrollHeight;
     }
 
+    function aliasPrompt(nodeId, currentAlias='') {
+      document.getElementById('abNodeId').value = nodeId || '';
+      document.getElementById('abAlias').value = currentAlias || '';
+      document.getElementById('abAlias').focus();
+    }
+
     function renderNodes(items) {
+      currentNodes = items;
       const box = document.getElementById('nodes');
       if (!items.length) {
         box.innerHTML = '<li>No nodes cached yet.</li>';
         return;
       }
-      box.innerHTML = items.map(n => `<li><strong>${esc(n.name)}</strong><br><span class="hint">${esc(n.node_id)} · ${esc(n.hw_model || '')}</span></li>`).join('');
+      box.innerHTML = items.map(n => {
+        const title = n.display_name || n.name || n.node_id;
+        const aliasMeta = n.alias ? `<div class="muted">Alias active</div>` : '';
+        return `<li>
+          <div class="row">
+            <div>
+              <strong>${esc(title)}</strong>
+              <div class="muted">${esc(n.node_id)} · ${esc(n.hw_model || '')}</div>
+              ${aliasMeta}
+            </div>
+            <button class="secondary smallbtn" onclick="aliasPrompt('${esc(n.node_id)}','${esc(n.alias || '')}')">Alias</button>
+          </div>
+        </li>`;
+      }).join('');
     }
 
-    function renderStats(status, state, messages) {
+    function renderAddressBook(items) {
+      const box = document.getElementById('addressBook');
+      if (!items.length) {
+        box.innerHTML = '<li>No aliases saved yet.</li>';
+        return;
+      }
+      box.innerHTML = items.map(e => `
+        <li>
+          <div class="row">
+            <div>
+              <strong>${esc(e.alias)}</strong>
+              <div class="muted">${esc(e.node_id)}</div>
+            </div>
+            <div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectRecipient('${esc(e.node_id)}')">Message</button><button class="secondary smallbtn" onclick="deleteAlias('${esc(e.node_id)}')">Delete</button></div>
+          </div>
+        </li>
+      `).join('');
+    }
+
+    function renderStats(status, state, messages, addressBookCount) {
       const stats = [
         ['Version', status.version || '-'],
         ['Proxy', status.proxy_connected ? 'Connected' : 'Disconnected'],
@@ -136,26 +244,63 @@
         ['Relay seen (estimate)', state.relay_seen_estimate ?? 0],
         ['Multi-hop seen (estimate)', state.multi_hop_seen_estimate ?? 0],
         ['Known nodes', (state.nodes || []).length],
+        ['Address book entries', addressBookCount],
         ['Last sync', status.last_sync || '-'],
-        ['Last packet', state.last_packet_at || '-']
       ];
       document.getElementById('statsGrid').innerHTML = stats.map(([k,v]) => `
         <div class="stat"><div class="label">${esc(k)}</div><div class="value ${String(v).includes('Disconnected') ? 'bad' : ''}">${esc(v)}</div></div>
       `).join('');
     }
 
+    async function saveAlias() {
+      const nodeId = document.getElementById('abNodeId').value.trim();
+      const alias = document.getElementById('abAlias').value.trim();
+      if (!nodeId || !alias) {
+        alert('Node ID and alias are required.');
+        return;
+      }
+      const res = await fetch('/api/address-book', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({node_id: nodeId, alias})
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        alert(data.error || 'Failed to save alias.');
+        return;
+      }
+      document.getElementById('abNodeId').value = '';
+      document.getElementById('abAlias').value = '';
+      await refreshAll();
+    }
+
+    async function deleteAlias(nodeId) {
+      await fetch(`/api/address-book/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
+      await refreshAll();
+    }
+
+    function selectRecipient(nodeId) {
+      const sel = document.getElementById('recipientSelect');
+      if ([...sel.options].some(o => o.value === nodeId)) {
+        sel.value = nodeId;
+        updateComposerPlaceholder();
+        document.getElementById('messageInput').focus();
+      }
+    }
+
     async function refreshAll() {
-      const [status, state, nodes, messages, debug] = await Promise.all([
+      const [status, state, nodes, messages, addressBook] = await Promise.all([
         getJson('/api/status'),
         getJson('/api/state'),
         getJson('/api/nodes'),
         getJson('/api/messages?limit=100'),
-        getJson('/api/debug')
+        getJson('/api/address-book')
       ]);
       renderMessages(messages);
       renderNodes(nodes);
-      renderStats(status, state, messages);
-      document.getElementById('debugBox').textContent = JSON.stringify(debug, null, 2);
+      renderAddressBook(addressBook);
+      renderRecipientOptions(nodes, addressBook);
+      renderStats(status, state, messages, addressBook.length);
     }
 
     document.getElementById('sendBtn').addEventListener('click', async () => {
@@ -165,19 +310,19 @@
       await fetch('/api/send', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text})
+        body: JSON.stringify({text, dest: document.getElementById('recipientSelect').value})
       });
       input.value = '';
       await refreshAll();
     });
-
     document.getElementById('messageInput').addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
         e.preventDefault();
         document.getElementById('sendBtn').click();
       }
     });
-
+    document.getElementById('recipientSelect').addEventListener('change', updateComposerPlaceholder);
+    document.getElementById('saveAliasBtn').addEventListener('click', saveAlias);
     document.getElementById('refreshBtn').addEventListener('click', refreshAll);
     document.getElementById('clearBtn').addEventListener('click', async () => {
       await fetch('/api/clear', {method: 'POST'});

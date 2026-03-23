@@ -14,10 +14,11 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.6.0"
+VERSION = "0.6.4"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"
+ADDRESS_BOOK_PATH = BASE_DIR / "address_book.json"
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -38,8 +39,10 @@ proxy_cache: dict[str, Any] = {
     "nodes": [],
 }
 store_lock = threading.Lock()
+address_book_lock = threading.Lock()
 stop_event = threading.Event()
 config_path_runtime = CONFIG_PATH
+address_book_cache: dict[str, dict[str, Any]] = {}
 
 
 def now_iso() -> str:
@@ -70,6 +73,58 @@ def init_db():
     conn.close()
 
 
+def init_address_book():
+    global address_book_cache
+    if not ADDRESS_BOOK_PATH.exists():
+        ADDRESS_BOOK_PATH.write_text("{}\n", encoding="utf-8")
+    with address_book_lock:
+        try:
+            data = json.loads(ADDRESS_BOOK_PATH.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                address_book_cache = data
+            else:
+                address_book_cache = {}
+        except Exception:
+            address_book_cache = {}
+
+
+def save_address_book():
+    with address_book_lock:
+        ADDRESS_BOOK_PATH.write_text(json.dumps(address_book_cache, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def get_alias_entry(node_id: str | None) -> dict[str, Any] | None:
+    if not node_id:
+        return None
+    with address_book_lock:
+        return dict(address_book_cache.get(node_id, {})) if node_id in address_book_cache else None
+
+
+def resolve_label(node_id: str | None, fallback_name: str | None = None) -> str:
+    entry = get_alias_entry(node_id)
+    if entry and entry.get("alias"):
+        return str(entry["alias"])
+    if fallback_name:
+        return str(fallback_name)
+    return str(node_id or "")
+
+
+def address_book_list() -> list[dict[str, Any]]:
+    with address_book_lock:
+        items = []
+        for node_id, entry in address_book_cache.items():
+            items.append(
+                {
+                    "node_id": node_id,
+                    "alias": entry.get("alias", ""),
+                    "notes": entry.get("notes", ""),
+                    "updated_at": entry.get("updated_at", ""),
+                }
+            )
+        items.sort(key=lambda x: (x["alias"].lower() if x["alias"] else "~", x["node_id"]))
+        return items
+
+
 def db_add_message(msg: dict[str, Any]):
     with store_lock:
         conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -87,6 +142,13 @@ def db_add_message(msg: dict[str, Any]):
         conn.close()
 
 
+def decorate_message(msg: dict[str, Any]) -> dict[str, Any]:
+    out = dict(msg)
+    out["from_label"] = resolve_label(out.get("from_id"), out.get("from_id"))
+    out["to_label"] = resolve_label(out.get("to_id"), out.get("to_id"))
+    return out
+
+
 def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 500))
     with store_lock:
@@ -97,7 +159,7 @@ def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
         ).fetchall()
         conn.close()
     rows.reverse()
-    return [
+    base = [
         {
             "id": r[0],
             "ts": r[1],
@@ -108,6 +170,7 @@ def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
         }
         for r in rows
     ]
+    return [decorate_message(m) for m in base]
 
 
 def proxy_request(payload: dict[str, Any], timeout: float = 2.0) -> dict[str, Any]:
@@ -136,7 +199,7 @@ def sync_proxy_loop():
             nodes_resp = proxy_request({"type": "get_nodes"})
             msgs_resp = proxy_request({"type": "get_messages", "limit": 100})
             state = state_resp.get("state", {})
-            nodes = nodes_resp.get("nodes", [])
+            raw_nodes = nodes_resp.get("nodes", [])
             messages = msgs_resp.get("messages", [])
 
             for msg in messages:
@@ -146,6 +209,20 @@ def sync_proxy_loop():
                     last_seen_ids.add(msg_id)
             if len(last_seen_ids) > 1000:
                 last_seen_ids = set(sorted(last_seen_ids)[-500:])
+
+            nodes = []
+            for n in raw_nodes:
+                node_id = n.get("node_id")
+                fallback_name = n.get("name") or node_id
+                alias_entry = get_alias_entry(node_id)
+                alias = alias_entry.get("alias") if alias_entry else ""
+                nodes.append(
+                    {
+                        **n,
+                        "alias": alias,
+                        "display_name": alias or fallback_name or node_id,
+                    }
+                )
 
             with cache_lock:
                 proxy_cache["state"] = state
@@ -227,7 +304,7 @@ def api_debug():
     with cache_lock:
         status = dict(proxy_cache["status"])
         state = dict(proxy_cache["state"])
-    return jsonify({"version": VERSION, "status": status, "state": state})
+    return jsonify({"version": VERSION, "status": status, "state": state, "address_book_count": len(address_book_list())})
 
 
 @app.route("/api/config/export")
@@ -252,6 +329,42 @@ def api_config_import():
     return jsonify({"ok": True, "message": "Configuration imported. Restart the service to apply changes."})
 
 
+@app.route("/api/address-book")
+def api_address_book_list():
+    return jsonify(address_book_list())
+
+
+@app.route("/api/address-book", methods=["POST"])
+def api_address_book_upsert():
+    data = request.get_json(force=True, silent=True) or {}
+    node_id = (data.get("node_id") or "").strip()
+    alias = (data.get("alias") or "").strip()
+    notes = (data.get("notes") or "").strip()
+    if not node_id:
+        return jsonify({"ok": False, "error": "node_id is required"}), 400
+    if not alias:
+        return jsonify({"ok": False, "error": "alias is required"}), 400
+    with address_book_lock:
+        address_book_cache[node_id] = {
+            "alias": alias,
+            "notes": notes,
+            "updated_at": now_iso(),
+        }
+    save_address_book()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/address-book/<path:node_id>", methods=["DELETE"])
+def api_address_book_delete(node_id: str):
+    with address_book_lock:
+        existed = node_id in address_book_cache
+        if existed:
+            del address_book_cache[node_id]
+    if existed:
+        save_address_book()
+    return jsonify({"ok": True, "deleted": existed})
+
+
 def main():
     parser = argparse.ArgumentParser(description="Meshtastic Web Chat")
     parser.add_argument("--config", required=True, help="Path to app_config.json")
@@ -272,6 +385,7 @@ def main():
         proxy_cache["status"]["proxy_port"] = proxy_port
 
     init_db()
+    init_address_book()
     threading.Thread(target=sync_proxy_loop, daemon=True, name="proxy-sync").start()
 
     logger.info("Starting web chat on %s:%s (proxy %s:%s)", listen_host, listen_port, proxy_host, proxy_port)
