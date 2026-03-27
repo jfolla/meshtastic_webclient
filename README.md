@@ -1,92 +1,85 @@
 # Meshtastic Web Chat
 
-**Version:** v0.6.4  
-**Package path:** `meshtastic_webchat`  
-**Service name:** `meshtastic-webchat.service`
+**Version:** v0.7.2-beta  
+**Status:** Level B beta  
+**Internal folder path:** `meshtastic_webchat`
 
-Meshtastic Web Chat is a local browser-based interface for Meshtastic nodes built around a **proxy-first** architecture.
+## Project purpose
 
-The web UI does **not** connect directly to the radio node. Instead, it talks to a local embedded proxy process that owns the single upstream connection to the node. This design improves stability when direct TCP access is fragile or when multiple clients would otherwise interfere with each other.
+Meshtastic Web Chat is a lightweight browser-based interface for Meshtastic nodes, designed to make day-to-day messaging and node management easier from a desktop browser.
 
-## Project goals
+This project uses a **proxy-first architecture**:
 
-- provide a simple local web chat for Meshtastic nodes
-- keep deployment simple with a single systemd service
-- avoid direct multi-client access to the node
-- provide a friendlier browser UI with useful status information
-- maintain a local address book that maps `node_id -> alias`
-- support direct messaging without forcing users to remember raw node IDs
+- the browser talks to the local Flask web application;
+- the web application talks to the embedded local proxy;
+- the proxy keeps the single live connection to the real Meshtastic node.
 
-## Key features
+This design helps reduce the instability that can happen when multiple clients connect directly to the same Meshtastic TCP endpoint.
 
-- single-service startup via `meshtastic-webchat.service`
-- embedded local proxy started automatically by `start_webchat.sh`
-- support for **serial** and **TCP** nodes through `app_config.json`
-- HTTPS via Flask ad-hoc certificates
-- cached messages stored locally in SQLite
-- node list, status, debug endpoint, config export/import
-- local address book (`node_id -> alias`)
-- aliases shown in node list, message list, and recipient selector
-- recipient selector merges **live nodes + address book entries**
-- direct message support from the chat composer
-- GitHub-friendly screenshot and documentation
+## What this beta adds
 
-## Architecture
+This **Level B beta** introduces the first room/channel management workflow that can actually help a node **join a new channel** from a Meshtastic channel URL or hash.
 
-```text
-Meshtastic node <-> embedded local proxy <-> web application <-> browser
-```
+The goal of this beta is to provide a visible and testable workflow for:
 
-The browser only talks to the web application.
-The web application only talks to the local proxy.
-The local proxy owns the one real connection to the node.
+1. pasting a channel URL or hash,
+2. importing it as a room,
+3. previewing the room locally,
+4. backing up the current node channel,
+5. applying the new room to the node,
+6. rolling back the last backup.
 
-## Address book
+## Main features
 
-The address book is a local correlation between a Meshtastic `node_id` and a human-friendly alias.
+- browser-based chat UI
+- broadcast and direct messages
+- address book (`node_id -> alias`)
+- embedded local proxy
+- room import/apply/rollback beta workflow
+- English UI
+- `systemd` service included
+- local JSON config and storage files
 
-Examples:
+## Interface layout
 
-```text
-!9ee86a74 -> OFFICE
-!9ee783b4 -> HOME
-```
+The interface is organized into visible tabs:
 
-This mapping is local to the web application. It does **not** modify the actual Meshtastic node name.
+- **Chat**
+  - active room summary
+  - quick status cards
+  - messages
+  - composer for broadcast and direct messages
+- **Channels**
+  - paste channel URL / hash
+  - import room
+  - apply room to node
+  - rollback last backup
+  - saved rooms
+  - backups
+- **Address Book**
+  - local alias mapping
+- **Nodes**
+  - cached nodes and quick actions
+- **Config**
+  - export/import local app config
+- **Debug**
+  - raw diagnostic state
 
-### Why it exists
+## Screenshot
 
-Meshtastic node IDs are stable but not easy to remember. The address book lets you:
-
-- identify nodes quickly in the UI
-- read messages more easily
-- send direct messages using aliases in the recipient list
-- keep your own naming convention without changing node firmware configuration
-
-## Sending messages
-
-The message composer supports both **broadcast** and **direct messages**.
-
-- Select **Broadcast (^all)** to send to the current mesh channel.
-- Select a specific node from the recipient dropdown to send a direct message.
-- The recipient dropdown merges:
-  - nodes currently visible in proxy cache
-  - entries saved in the local address book
-- Saved aliases are shown before the raw node ID when available.
-
-The application still uses the real Meshtastic `node_id` under the hood. Aliases are only a local UI convenience layer.
+![Meshtastic Web Chat UI](docs/screenshot-ui-v0.7.2-beta.jpg)
 
 ## Installation
 
 ### 1. Extract the package
 
-Copy the project to:
+Extract the ZIP so that the project ends up in:
 
 ```text
 /home/meshtastic/meshtastic_webchat
 ```
 
-### 2. Create a virtual environment
+### 2. Create or reuse the virtual environment
 
 ```bash
 cd /home/meshtastic/meshtastic_webchat
@@ -94,7 +87,6 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-chmod +x start_webchat.sh
 ```
 
 ### 3. Configure the application
@@ -109,16 +101,12 @@ Edit:
 
 ```json
 {
-  "version": "0.6.4",
+  "version": "0.7.2-beta",
   "node": {
     "mode": "serial",
     "host": "",
     "port": "/dev/ttyUSB0",
     "channel": 0
-  },
-  "proxy": {
-    "host": "127.0.0.1",
-    "port": 4404
   },
   "web": {
     "listen_host": "0.0.0.0",
@@ -135,16 +123,12 @@ Edit:
 
 ```json
 {
-  "version": "0.6.4",
+  "version": "0.7.2-beta",
   "node": {
     "mode": "tcp",
     "host": "192.168.0.18",
     "port": "",
     "channel": 0
-  },
-  "proxy": {
-    "host": "127.0.0.1",
-    "port": 4404
   },
   "web": {
     "listen_host": "0.0.0.0",
@@ -159,6 +143,8 @@ Edit:
 
 ### 4. Install the systemd service
 
+Copy the provided service file:
+
 ```bash
 sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
 sudo systemctl daemon-reload
@@ -166,96 +152,121 @@ sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 ```
 
-### 5. Check logs
+### 5. Follow the logs
 
 ```bash
-sudo systemctl status meshtastic-webchat
 journalctl -u meshtastic-webchat -f
 ```
 
-## Usage
+## How it works
 
-Open the UI in your browser:
+### Chat
 
-```text
-https://YOUR_HOST:8088
-```
+Use the **Chat** tab for daily operation:
 
-Because ad-hoc HTTPS is enabled by default, your browser will show a certificate warning the first time.
+- read messages
+- send broadcast messages
+- pick a specific node for direct messaging
 
-### Main UI areas
+### Channels (Level B beta)
 
-- **Messages**: cached message history from the proxy
-- **Status**: backend/proxy state and quick counters
-- **Nodes**: known nodes from proxy cache
-- **Address Book**: local `node_id -> alias` mapping
-- **Configuration**: export/import `app_config.json`
-- **Debug**: raw status/state information through `/api/debug`
+Use the **Channels** tab to test room/channel joining.
 
-### Address book workflow
+#### Join a new channel from URL/hash
 
-1. open the **Address Book** section
-2. enter a `node_id`, for example `!9ee86a74`
-3. enter an alias, for example `OFFICE`
-4. click **Save alias**
+1. Paste a Meshtastic channel URL or `#...` hash into **Paste channel URL / hash**.
+2. Optionally enter a local room name.
+3. Click **Import room**.
+4. The room is stored locally.
+5. Click **Apply** on the saved room entry.
+6. The current primary channel is backed up before apply.
+7. The node is switched to the imported room using the Meshtastic CLI.
 
-After saving:
-- the node list will prefer the alias
-- messages from or to that node will show the alias first
-- the recipient selector will include that alias even if the node is not currently visible in the live cache
+#### Rollback
 
-You can also click the **Alias** button next to a node in the node list to prefill the form.
+Use **Rollback last backup** to restore the previous room/channel state.
 
-### Direct message workflow
+## Important beta notes
 
-1. open the **Send to** dropdown in the chat composer
-2. select either:
-   - `Broadcast (^all)`
-   - a live node
-   - an address book alias
-3. type your message
-4. click **Send**
+This is a **beta** implementation of channel join workflow.
 
-You can also click the **Message** button next to an address book entry to preselect that recipient.
+Current assumptions and limitations:
 
-## Files
+- only the **last backup** is restored by the rollback button;
+- the workflow is designed for **explicit apply**, not automatic channel switching;
+- this modifies the **real node channel configuration**;
+- you should treat this feature as experimental until fully validated on your setup.
 
-- `app.py` — Flask web application
-- `proxy/main.py` — embedded local proxy
-- `start_webchat.sh` — launcher used by systemd
-- `app_config.json` — runtime configuration
-- `address_book.json` — local alias mapping
-- `webchat_cache.db` — local cached messages
-- `meshtastic-webchat.service` — systemd service unit
-- `docs/screenshot-ui-v0.6.4.jpg` — screenshot used in the README
+## Files used by the application
 
-## Screenshot
+- `app_config.json` – runtime configuration
+- `address_book.json` – local alias mapping
+- `rooms.json` – saved imported rooms
+- `room_backups.json` – backup history for channel rollback
+- `webchat_cache.db` – cached message and state storage
 
-![Meshtastic Web Chat UI](docs/screenshot-ui-v0.6.4.jpg)
+## systemd behavior
+
+This project is shipped as a **single service**:
+
+- `meshtastic-webchat.service`
+
+The service runs `start_webchat.sh`, which:
+
+1. reads `app_config.json`,
+2. starts the embedded proxy,
+3. waits for the local proxy socket,
+4. starts the Flask web application.
 
 ## Troubleshooting
 
-### Proxy poll failed: connection refused
-The proxy is not running or the local proxy port does not match `app_config.json`.
+### The web app starts but cannot reach the node
 
-### The web UI loads but shows disconnected state
-The proxy is running, but the proxy cannot reach the configured node.
+Check:
+
+```bash
+journalctl -u meshtastic-webchat -f
+```
+
+Then verify the node target in `app_config.json`.
 
 ### Serial mode does not work
-Check that the configured user can access the serial device, usually by being in the `dialout` group.
 
-### TCP mode times out even though the node IP replies to ping
-This usually indicates a Meshtastic TCP/API-level problem rather than a basic network problem. The proxy-first design reduces the impact of that instability, but the upstream node connection can still fail independently of ICMP reachability.
+Make sure the service user can access the serial device:
+
+```bash
+sudo usermod -a -G dialout meshtastic
+```
+
+Then log out or reboot.
+
+### TCP mode times out
+
+Make sure the node is reachable and that no competing direct TCP client is constantly interfering with the same node.
+
+### The UI looks old or unchanged
+
+Do a hard refresh in the browser and make sure the installed `templates/index.html` matches this release.
 
 ## Changelog
 
-### v0.6.4
-- Fixed the direct-message recipient selector so it merges **live nodes + address book entries**.
-- Aliases saved in the address book now appear in the recipient selector even when the node is not currently present in the live proxy cache.
-- Added a **Message** button to address book entries to preselect the direct-message recipient.
-- Updated the README to match the actual recipient-selector behavior and removed older duplicated changelog sections.
+### v0.7.2-beta
 
-### v0.6.3
-- Removed the right-side raw debug text panel to keep the interface cleaner.
-- Made direct messaging clearer by adding a dedicated "Send to" label above the recipient selector.
-- Clarified in the address book section that aliases appear in the direct-message recipient list.
+- rebuilt the UI as **real visible tabs**
+- moved room/channel join workflow into a dedicated **Channels** tab
+- kept direct messaging and address book behavior
+- kept Level B beta room import/apply/rollback flow
+- updated README to describe the beta clearly
+
+### v0.7.0-beta
+
+- first beta of Level B room management
+- room import, apply, rollback introduced
+
+### Stable baseline
+
+The project baseline before this beta line was the stable `v0.6.4` generation.
+
+## License / project note
+
+This repository is currently focused on practical usability and iterative testing. Treat beta releases as experimental and keep backups of working versions before replacing a known-good deployment.
