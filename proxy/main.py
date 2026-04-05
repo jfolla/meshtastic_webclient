@@ -97,6 +97,7 @@ class ProxyState:
     mode: str = "serial"
     target: str = ""
     channel: int = 0
+    tx_channel_verified: bool = False
     last_connect_at: Optional[str] = None
     last_disconnect_at: Optional[str] = None
     last_error: Optional[str] = None
@@ -217,7 +218,9 @@ class UpstreamManager:
         if mode == "serial":
             iface = meshtastic.serial_interface.SerialInterface(devPath=target)
         else:
-            iface = meshtastic.tcp_interface.TCPInterface(hostname=target)
+            tcp_port = int(node_cfg.get("tcp_port", 4403) or 4403)
+            iface = meshtastic.tcp_interface.TCPInterface(hostname=target, portNumber=tcp_port)
+            target = f"{target}:{tcp_port}"
         with self.iface_lock:
             self.iface = iface
         with self.state_lock:
@@ -269,15 +272,120 @@ class UpstreamManager:
                         self.state.last_error = str(exc)
             time.sleep(5)
 
+    def _get_iface(self):
+        with self.iface_lock:
+            iface = self.iface
+        if iface is None:
+            raise RuntimeError("Upstream not connected")
+        return iface
+
+    def _refresh_channels(self):
+        iface = self._get_iface()
+        node = getattr(iface, "localNode", None)
+        if node is None:
+            raise RuntimeError("localNode not available")
+        req = getattr(node, "requestChannels", None)
+        if callable(req):
+            req()
+            time.sleep(0.8)
+        channels = getattr(node, "channels", None)
+        if channels is None:
+            raise RuntimeError("channel list not available")
+        if isinstance(channels, dict):
+            channels = [channels[k] for k in sorted(channels.keys())]
+        return list(channels)
+
+    @staticmethod
+    def _channel_name(ch):
+        settings = getattr(ch, "settings", None)
+        if settings is not None:
+            name = getattr(settings, "name", None)
+            if name:
+                return str(name)
+        if isinstance(ch, dict):
+            return str(((ch.get("settings") or {}).get("name")) or ch.get("name") or "")
+        return ""
+
+    @staticmethod
+    def _channel_role(ch):
+        role = getattr(ch, "role", None)
+        if role is not None:
+            return getattr(role, "name", str(role))
+        if isinstance(ch, dict):
+            return str(ch.get("role") or "")
+        return ""
+
+    def get_channels(self) -> dict[str, Any]:
+        channels = self._refresh_channels()
+        with self.state_lock:
+            current_tx = int(self.state.channel)
+        items = []
+        for idx, ch in enumerate(channels):
+            items.append({
+                "index": idx,
+                "name": self._channel_name(ch),
+                "role": self._channel_role(ch),
+                "selected_tx": idx == current_tx,
+            })
+        return {"ok": True, "channels": items, "selected_index": current_tx, "count": len(items)}
+
+    def set_tx_channel(self, channel_index: int) -> dict[str, Any]:
+        channels = self._refresh_channels()
+        if channel_index < 0 or channel_index >= len(channels):
+            raise RuntimeError(f"channel index out of range: {channel_index}")
+        ch = channels[channel_index]
+        with self.state_lock:
+            self.state.channel = channel_index
+            self.state.tx_channel_verified = True
+        return {
+            "ok": True,
+            "verified": True,
+            "selected_index": channel_index,
+            "channel_name": self._channel_name(ch),
+            "role": self._channel_role(ch),
+        }
+
+    def join_channel_url(self, url: str, add_only: bool = False) -> dict[str, Any]:
+        iface = self._get_iface()
+        node = getattr(iface, "localNode", None)
+        if node is None:
+            raise RuntimeError("localNode not available")
+        setter = getattr(node, "setURL", None)
+        if not callable(setter):
+            raise RuntimeError("setURL() not supported by installed meshtastic library")
+        setter(url, addOnly=bool(add_only))
+        channels = self._refresh_channels()
+        return {"ok": True, "verified": True, "count": len(channels)}
+
+    def delete_channel(self, channel_index: int) -> dict[str, Any]:
+        iface = self._get_iface()
+        node = getattr(iface, "localNode", None)
+        if node is None:
+            raise RuntimeError("localNode not available")
+        channels = self._refresh_channels()
+        if channel_index < 0 or channel_index >= len(channels):
+            raise RuntimeError(f"channel index out of range: {channel_index}")
+        role = self._channel_role(channels[channel_index]).upper()
+        if role == "PRIMARY":
+            raise RuntimeError("refusing to delete PRIMARY channel")
+        deleter = getattr(node, "deleteChannel", None)
+        if not callable(deleter):
+            raise RuntimeError("deleteChannel() not supported by installed meshtastic library")
+        deleter(channel_index)
+        channels = self._refresh_channels()
+        return {"ok": True, "verified": True, "count": len(channels), "deleted_index": channel_index}
+
     def send_text(self, text: str, destination_id: Optional[str] = None) -> None:
         with self.iface_lock:
             iface = self.iface
         if iface is None:
             raise RuntimeError("Upstream not connected")
+        with self.state_lock:
+            channel_index = int(self.state.channel)
         kwargs = {
             "text": text,
             "wantAck": False,
-            "channelIndex": int(self.config["node"].get("channel", 0)),
+            "channelIndex": channel_index,
         }
         if destination_id:
             kwargs["destinationId"] = destination_id
@@ -336,6 +444,32 @@ class JSONHandler(socketserver.StreamRequestHandler):
             try:
                 manager.send_text(text=text, destination_id=msg.get("dest"))
                 self._send({"type": "ack", "ok": True})
+            except Exception as exc:
+                self._send({"type": "error", "error": str(exc)})
+        elif typ == "get_channels":
+            try:
+                self._send({"type": "channels", **manager.get_channels()})
+            except Exception as exc:
+                self._send({"type": "error", "error": str(exc)})
+        elif typ == "set_tx_channel":
+            try:
+                idx = int(msg.get("channel_index", 0))
+                self._send({"type": "set_tx_channel", **manager.set_tx_channel(idx)})
+            except Exception as exc:
+                self._send({"type": "error", "error": str(exc)})
+        elif typ == "join_channel_url":
+            try:
+                url = (msg.get("url") or "").strip()
+                if not url:
+                    self._send({"type": "error", "error": "missing url"})
+                    return
+                self._send({"type": "join_channel_url", **manager.join_channel_url(url, bool(msg.get("add_only", False)))})
+            except Exception as exc:
+                self._send({"type": "error", "error": str(exc)})
+        elif typ == "delete_channel":
+            try:
+                idx = int(msg.get("channel_index", -1))
+                self._send({"type": "delete_channel", **manager.delete_channel(idx)})
             except Exception as exc:
                 self._send({"type": "error", "error": str(exc)})
         elif typ == "debug":

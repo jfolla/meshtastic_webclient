@@ -5,344 +5,106 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Meshtastic Web Chat</title>
   <style>
-    :root {
-      --bg: #0b1220;
-      --panel: #121a2b;
-      --panel-2: #182237;
-      --text: #e7ecf5;
-      --muted: #9fb0ca;
-      --accent: #57b3ff;
-      --accent-2: #7cf29a;
-      --border: #26324c;
-      --danger: #ff8d8d;
-      --shadow: 0 10px 30px rgba(0,0,0,.25);
-    }
-    * { box-sizing: border-box; }
-    body { margin: 0; background: linear-gradient(180deg,#0a1020,#0d1527 35%,#0c1422); color: var(--text); font-family: Inter, system-ui, sans-serif; }
-    header { padding: 20px 24px; border-bottom: 1px solid var(--border); background: rgba(7,12,22,.6); backdrop-filter: blur(8px); position: sticky; top: 0; z-index: 10; }
-    header h1 { margin: 0; font-size: 1.4rem; }
-    header p { margin: 6px 0 0; color: var(--muted); font-size: .95rem; }
-    .wrap { display: grid; grid-template-columns: 1.7fr 1fr; gap: 18px; padding: 18px; }
-    .card { background: linear-gradient(180deg,var(--panel),var(--panel-2)); border: 1px solid var(--border); border-radius: 18px; box-shadow: var(--shadow); }
-    .section-title { margin: 0 0 14px; font-size: 1rem; color: var(--muted); text-transform: uppercase; letter-spacing: .08em; }
-    .chat { display: flex; flex-direction: column; min-height: 70vh; }
-    .messages { flex: 1; padding: 18px; overflow: auto; max-height: 72vh; }
-    .bubble { padding: 12px 14px; border-radius: 14px; margin-bottom: 12px; background: rgba(255,255,255,.03); border: 1px solid var(--border); }
-    .bubble.out { background: rgba(87,179,255,.12); border-color: rgba(87,179,255,.35); }
-    .meta { font-size: .78rem; color: var(--muted); margin-bottom: 6px; }
-    .text { white-space: pre-wrap; line-height: 1.45; }
-    .composer { display: grid; grid-template-columns: 280px 1fr auto; gap: 10px; padding: 16px; border-top: 1px solid var(--border); }
-    input[type=text], input[type=file], textarea, select { width: 100%; background: rgba(255,255,255,.03); border: 1px solid var(--border); color: var(--text); padding: 12px 14px; border-radius: 12px; }
-    button { border: 0; border-radius: 12px; padding: 12px 16px; cursor: pointer; background: var(--accent); color: #031220; font-weight: 700; }
-    button.secondary { background: rgba(255,255,255,.05); color: var(--text); border: 1px solid var(--border); }
-    .side { padding: 18px; display: grid; gap: 18px; }
-    .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
-    .stat { padding: 12px; border: 1px solid var(--border); border-radius: 14px; background: rgba(255,255,255,.03); }
-    .stat .label { color: var(--muted); font-size: .78rem; margin-bottom: 4px; }
-    .stat .value { font-size: 1.05rem; font-weight: 700; }
-    .bad { color: var(--danger); }
-    ul.nodes, ul.book { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
-    ul.nodes li, ul.book li { padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: rgba(255,255,255,.03); }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
-    .hint { color: var(--muted); font-size: .9rem; }
-    .row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }
-    .muted { color: var(--muted); font-size: .85rem; }
-    .smallbtn { padding: 8px 10px; font-size: .85rem; }
-    @media (max-width: 980px) { .wrap { grid-template-columns: 1fr; } .chat { min-height: auto; } .messages { max-height: 50vh; } .composer { grid-template-columns: 1fr; } }
+    :root { --bg:#0b1220; --panel:#121a2b; --panel-2:#182237; --text:#e7ecf5; --muted:#9fb0ca; --accent:#57b3ff; --accent-2:#7cf29a; --border:#26324c; --danger:#ff8d8d; --shadow:0 10px 30px rgba(0,0,0,.25); }
+    *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#0a1020,#0d1527 35%,#0c1422);color:var(--text);font-family:Inter,system-ui,sans-serif}
+    header{padding:20px 24px;border-bottom:1px solid var(--border);background:rgba(7,12,22,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:10}
+    header h1{margin:0;font-size:1.4rem} header p{margin:6px 0 0;color:var(--muted);font-size:.95rem}
+    .page{padding:18px}.card{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow)}
+    .tabs{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}.tabbtn{border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
+    .tabbtn.active{background:var(--accent);color:#031220;border-color:transparent}.tabpanel{display:none}.tabpanel.active{display:block}
+    .section-title{margin:0 0 14px;font-size:1rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
+    .chat{display:flex;flex-direction:column;min-height:70vh}.messages{flex:1;padding:18px;overflow:auto;max-height:72vh}
+    .bubble{padding:12px 14px;border-radius:14px;margin-bottom:12px;background:rgba(255,255,255,.03);border:1px solid var(--border)}.bubble.out{background:rgba(87,179,255,.12);border-color:rgba(87,179,255,.35)}
+    .meta{font-size:.78rem;color:var(--muted);margin-bottom:6px}.text{white-space:pre-wrap;line-height:1.45}
+    .composer{display:grid;grid-template-columns:280px 1fr auto;gap:10px;padding:16px;border-top:1px solid var(--border)}
+    input[type=text], input[type=file], textarea, select{width:100%;background:rgba(255,255,255,.03);border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:12px}
+    button{border:0;border-radius:12px;padding:12px 16px;cursor:pointer;background:var(--accent);color:#031220;font-weight:700} button.secondary{background:rgba(255,255,255,.05);color:var(--text);border:1px solid var(--border)}
+    .panel-pad{padding:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{padding:12px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.03)}
+    .stat .label{color:var(--muted);font-size:.78rem;margin-bottom:4px}.stat .value{font-size:1.05rem;font-weight:700}.bad{color:var(--danger)}
+    ul.nodes,ul.book,ul.channels{list-style:none;padding:0;margin:0;display:grid;gap:8px} ul.nodes li,ul.book li,ul.channels li{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.03)}
+    .toolbar{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.hint{color:var(--muted);font-size:.9rem}.row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}.muted{color:var(--muted);font-size:.85rem}.smallbtn{padding:8px 10px;font-size:.85rem}
+    .split{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}.inline-status{font-size:.9rem;color:var(--muted);margin-top:10px}.ok{color:var(--accent-2)}
+    @media (max-width:980px){.composer,.grid,.split{grid-template-columns:1fr}.messages{max-height:50vh}}
   </style>
 </head>
 <body>
-  <header>
-    <h1>Meshtastic Web Chat</h1>
-    <p>Single-service proxy-first local web interface for Meshtastic nodes.</p>
-  </header>
-  <div class="wrap">
+<header>
+  <h1>Meshtastic Web Chat</h1>
+  <p>Single-service proxy-first local web interface for Meshtastic nodes. Version {{ version }}</p>
+</header>
+<div class="page">
+  <div class="tabs">
+    <button class="tabbtn active" data-tab="messagesTab">Messages</button>
+    <button class="tabbtn" data-tab="statisticsTab">Statistics</button>
+    <button class="tabbtn" data-tab="nodesTab">Nodes</button>
+    <button class="tabbtn" data-tab="addressBookTab">Address Book</button>
+    <button class="tabbtn" data-tab="configurationTab">Configuration</button>
+    <button class="tabbtn" data-tab="channelsTab">Channels</button>
+  </div>
+
+  <section class="tabpanel active" id="messagesTab">
     <section class="card chat">
       <div class="messages" id="messages"></div>
       <div class="composer">
         <div style="display:flex;flex-direction:column;gap:6px;">
           <div class="muted" style="font-size:.8rem;">Send to</div>
-          <select id="recipientSelect">
-          <option value="">Broadcast (^all)</option>
-        </select>
+          <select id="recipientSelect"><option value="">Broadcast (^all)</option></select>
         </div>
         <input id="messageInput" type="text" placeholder="Write a message...">
         <button id="sendBtn">Send</button>
       </div>
     </section>
-    <aside class="card side">
-      <div>
-        <h2 class="section-title">Status</h2>
-        <div class="grid" id="statsGrid"></div>
-        <div class="toolbar">
-          <button class="secondary" id="refreshBtn">Refresh</button>
-          <button class="secondary" id="clearBtn">Clear cache</button>
-        </div>
+  </section>
+
+  <section class="tabpanel" id="statisticsTab"><div class="card panel-pad"><h2 class="section-title">Status</h2><div class="grid" id="statsGrid"></div><div class="toolbar"><button class="secondary" id="refreshBtn">Refresh</button><button class="secondary" id="clearBtn">Clear cache</button></div></div></section>
+  <section class="tabpanel" id="nodesTab"><div class="card panel-pad"><h2 class="section-title">Nodes</h2><ul class="nodes" id="nodes"></ul></div></section>
+  <section class="tabpanel" id="addressBookTab"><div class="card panel-pad"><h2 class="section-title">Address Book</h2><div class="toolbar"><input id="abNodeId" type="text" placeholder="Node ID, e.g. !9ee86a74"><input id="abAlias" type="text" placeholder="Alias, e.g. OFFICE"><button class="secondary" id="saveAliasBtn">Save alias</button></div><p class="hint">Store a local alias for a mesh node ID. The alias is only used by this web UI and appears in the direct-message recipient list.</p><ul class="book" id="addressBook"></ul></div></section>
+  <section class="tabpanel" id="configurationTab"><div class="card panel-pad"><h2 class="section-title">Configuration</h2><div class="toolbar"><button class="secondary" id="exportCfgBtn">Export config</button><label class="secondary" style="display:inline-flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;">Import config<input id="importCfgInput" type="file" accept="application/json" style="display:none;"></label></div><p class="hint">Importing a config replaces <code>app_config.json</code>. Restart the service after import.</p></div></section>
+
+  <section class="tabpanel" id="channelsTab">
+    <div class="split">
+      <div class="card panel-pad">
+        <h2 class="section-title">Channels</h2>
+        <div class="toolbar" style="margin-top:0;"><button class="secondary" id="refreshChannelsBtn">Refresh channels</button></div>
+        <ul class="channels" id="channelsList"></ul>
+        <div id="channelsStatus" class="inline-status"></div>
       </div>
-      <div>
-        <h2 class="section-title">Nodes</h2>
-        <ul class="nodes" id="nodes"></ul>
+      <div class="card panel-pad">
+        <h2 class="section-title">Join from URL</h2>
+        <input id="channelUrlInput" type="text" placeholder="meshtastic://...">
+        <div class="toolbar"><label class="secondary" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;"><input id="channelAddOnly" type="checkbox" style="width:auto;">Add only</label><button id="joinChannelBtn">Join URL</button></div>
+        <p class="hint">Use a Meshtastic channel URL. The proxy asks the connected node to apply it, then re-reads the channel list for verification.</p>
       </div>
-      <div>
-        <h2 class="section-title">Address Book</h2>
-        <div class="toolbar">
-          <input id="abNodeId" type="text" placeholder="Node ID, e.g. !9ee86a74">
-          <input id="abAlias" type="text" placeholder="Alias, e.g. OFFICE">
-          <button class="secondary" id="saveAliasBtn">Save alias</button>
-        </div>
-        <p class="hint">Store a local alias for a mesh node ID. The alias is only used by this web UI and appears in the direct-message recipient list.</p>
-        <ul class="book" id="addressBook"></ul>
-      </div>
-      <div>
-        <h2 class="section-title">Configuration</h2>
-        <div class="toolbar">
-          <button class="secondary" id="exportCfgBtn">Export config</button>
-          <label class="secondary" style="display:inline-flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;">
-            Import config
-            <input id="importCfgInput" type="file" accept="application/json" style="display:none;">
-          </label>
-        </div>
-        <p class="hint">Importing a config replaces <code>app_config.json</code>. Restart the service after import.</p>
-      </div>
-    </aside>
-  </div>
-  <script>
-    let currentNodes = [];
-
-    async function getJson(url, opts) {
-      const res = await fetch(url, opts);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return await res.json();
-    }
-
-    function esc(s) {
-      return String(s ?? "").replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
-    }
-
-    function nodeDisplay(n) {
-      return n.display_name || n.alias || n.name || n.node_id;
-    }
-
-    function renderRecipientOptions(nodes, addressBook) {
-      const sel = document.getElementById('recipientSelect');
-      const current = sel.value;
-      const merged = new Map();
-
-      for (const n of (nodes || [])) {
-        if (!n.node_id) continue;
-        merged.set(n.node_id, {
-          node_id: n.node_id,
-          alias: n.alias || '',
-          name: n.name || '',
-          display_name: n.display_name || n.alias || n.name || n.node_id,
-          source: 'node'
-        });
-      }
-
-      for (const e of (addressBook || [])) {
-        if (!e.node_id) continue;
-        const existing = merged.get(e.node_id) || { node_id: e.node_id, name: '', display_name: e.node_id, source: 'address_book' };
-        existing.alias = e.alias || existing.alias || '';
-        existing.display_name = e.alias || existing.display_name || e.node_id;
-        merged.set(e.node_id, existing);
-      }
-
-      const opts = ['<option value="">Broadcast (^all)</option>'];
-      const sorted = [...merged.values()].sort((a, b) => (a.display_name || a.node_id).localeCompare(b.display_name || b.node_id));
-      for (const n of sorted) {
-        const title = n.display_name || n.alias || n.name || n.node_id;
-        const meta = n.node_id && n.node_id !== title ? ` (${n.node_id})` : '';
-        opts.push(`<option value="${esc(n.node_id)}">${esc(title + meta)}</option>`);
-      }
-      sel.innerHTML = opts.join('');
-      if ([...sel.options].some(o => o.value === current)) {
-        sel.value = current;
-      }
-      updateComposerPlaceholder();
-    }
-
-    function updateComposerPlaceholder() {
-      const sel = document.getElementById('recipientSelect');
-      const input = document.getElementById('messageInput');
-      const selected = sel.options[sel.selectedIndex]?.text || '';
-      input.placeholder = sel.value ? `Write a direct message to ${selected}...` : 'Write a broadcast message...';
-    }
-
-    function renderMessages(items) {
-      const box = document.getElementById('messages');
-      box.innerHTML = items.map(m => {
-        const fromLabel = m.from_label || m.from_id || '';
-        const toLabel = m.to_label || m.to_id || '';
-        const fromMeta = m.from_id && m.from_id !== fromLabel ? ` (${esc(m.from_id)})` : '';
-        const toMeta = m.to_id && m.to_id !== toLabel ? ` (${esc(m.to_id)})` : '';
-        return `
-          <div class="bubble ${m.direction === 'out' ? 'out' : ''}">
-            <div class="meta">${esc(m.ts)} · ${esc(fromLabel)}${fromMeta} → ${esc(toLabel)}${toMeta}</div>
-            <div class="text">${esc(m.text || '')}</div>
-          </div>`;
-      }).join('');
-      box.scrollTop = box.scrollHeight;
-    }
-
-    function aliasPrompt(nodeId, currentAlias='') {
-      document.getElementById('abNodeId').value = nodeId || '';
-      document.getElementById('abAlias').value = currentAlias || '';
-      document.getElementById('abAlias').focus();
-    }
-
-    function renderNodes(items) {
-      currentNodes = items;
-      const box = document.getElementById('nodes');
-      if (!items.length) {
-        box.innerHTML = '<li>No nodes cached yet.</li>';
-        return;
-      }
-      box.innerHTML = items.map(n => {
-        const title = n.display_name || n.name || n.node_id;
-        const aliasMeta = n.alias ? `<div class="muted">Alias active</div>` : '';
-        return `<li>
-          <div class="row">
-            <div>
-              <strong>${esc(title)}</strong>
-              <div class="muted">${esc(n.node_id)} · ${esc(n.hw_model || '')}</div>
-              ${aliasMeta}
-            </div>
-            <button class="secondary smallbtn" onclick="aliasPrompt('${esc(n.node_id)}','${esc(n.alias || '')}')">Alias</button>
-          </div>
-        </li>`;
-      }).join('');
-    }
-
-    function renderAddressBook(items) {
-      const box = document.getElementById('addressBook');
-      if (!items.length) {
-        box.innerHTML = '<li>No aliases saved yet.</li>';
-        return;
-      }
-      box.innerHTML = items.map(e => `
-        <li>
-          <div class="row">
-            <div>
-              <strong>${esc(e.alias)}</strong>
-              <div class="muted">${esc(e.node_id)}</div>
-            </div>
-            <div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectRecipient('${esc(e.node_id)}')">Message</button><button class="secondary smallbtn" onclick="deleteAlias('${esc(e.node_id)}')">Delete</button></div>
-          </div>
-        </li>
-      `).join('');
-    }
-
-    function renderStats(status, state, messages, addressBookCount) {
-      const stats = [
-        ['Version', status.version || '-'],
-        ['Proxy', status.proxy_connected ? 'Connected' : 'Disconnected'],
-        ['Backend', status.backend_connected ? 'Connected' : 'Disconnected'],
-        ['Messages cached', messages.length],
-        ['Messages RX', state.messages_rx ?? 0],
-        ['Messages TX', state.messages_tx ?? 0],
-        ['Packets RX seen', state.packets_rx_seen ?? 0],
-        ['Relay seen (estimate)', state.relay_seen_estimate ?? 0],
-        ['Multi-hop seen (estimate)', state.multi_hop_seen_estimate ?? 0],
-        ['Known nodes', (state.nodes || []).length],
-        ['Address book entries', addressBookCount],
-        ['Last sync', status.last_sync || '-'],
-      ];
-      document.getElementById('statsGrid').innerHTML = stats.map(([k,v]) => `
-        <div class="stat"><div class="label">${esc(k)}</div><div class="value ${String(v).includes('Disconnected') ? 'bad' : ''}">${esc(v)}</div></div>
-      `).join('');
-    }
-
-    async function saveAlias() {
-      const nodeId = document.getElementById('abNodeId').value.trim();
-      const alias = document.getElementById('abAlias').value.trim();
-      if (!nodeId || !alias) {
-        alert('Node ID and alias are required.');
-        return;
-      }
-      const res = await fetch('/api/address-book', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({node_id: nodeId, alias})
-      });
-      const data = await res.json();
-      if (!data.ok) {
-        alert(data.error || 'Failed to save alias.');
-        return;
-      }
-      document.getElementById('abNodeId').value = '';
-      document.getElementById('abAlias').value = '';
-      await refreshAll();
-    }
-
-    async function deleteAlias(nodeId) {
-      await fetch(`/api/address-book/${encodeURIComponent(nodeId)}`, {method: 'DELETE'});
-      await refreshAll();
-    }
-
-    function selectRecipient(nodeId) {
-      const sel = document.getElementById('recipientSelect');
-      if ([...sel.options].some(o => o.value === nodeId)) {
-        sel.value = nodeId;
-        updateComposerPlaceholder();
-        document.getElementById('messageInput').focus();
-      }
-    }
-
-    async function refreshAll() {
-      const [status, state, nodes, messages, addressBook] = await Promise.all([
-        getJson('/api/status'),
-        getJson('/api/state'),
-        getJson('/api/nodes'),
-        getJson('/api/messages?limit=100'),
-        getJson('/api/address-book')
-      ]);
-      renderMessages(messages);
-      renderNodes(nodes);
-      renderAddressBook(addressBook);
-      renderRecipientOptions(nodes, addressBook);
-      renderStats(status, state, messages, addressBook.length);
-    }
-
-    document.getElementById('sendBtn').addEventListener('click', async () => {
-      const input = document.getElementById('messageInput');
-      const text = input.value.trim();
-      if (!text) return;
-      await fetch('/api/send', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({text, dest: document.getElementById('recipientSelect').value})
-      });
-      input.value = '';
-      await refreshAll();
-    });
-    document.getElementById('messageInput').addEventListener('keydown', async (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        document.getElementById('sendBtn').click();
-      }
-    });
-    document.getElementById('recipientSelect').addEventListener('change', updateComposerPlaceholder);
-    document.getElementById('saveAliasBtn').addEventListener('click', saveAlias);
-    document.getElementById('refreshBtn').addEventListener('click', refreshAll);
-    document.getElementById('clearBtn').addEventListener('click', async () => {
-      await fetch('/api/clear', {method: 'POST'});
-      await refreshAll();
-    });
-    document.getElementById('exportCfgBtn').addEventListener('click', () => {
-      window.location.href = '/api/config/export';
-    });
-    document.getElementById('importCfgInput').addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      const fd = new FormData();
-      fd.append('file', file);
-      const res = await fetch('/api/config/import', {method: 'POST', body: fd});
-      const data = await res.json();
-      alert(data.message || data.error || 'Done');
-    });
-
-    refreshAll().catch(console.error);
-    setInterval(() => refreshAll().catch(console.error), 5000);
-  </script>
+    </div>
+  </section>
+</div>
+<script>
+let currentNodes = [];
+async function getJson(url, opts) { const res = await fetch(url, opts); const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`); return data; }
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch])); }
+function updateComposerPlaceholder(){ const sel=document.getElementById('recipientSelect'); const input=document.getElementById('messageInput'); const selected=sel.options[sel.selectedIndex]?.text || ''; input.placeholder=sel.value ? `Write a direct message to ${selected}...` : 'Write a broadcast message...'; }
+function renderRecipientOptions(nodes,addressBook){ const sel=document.getElementById('recipientSelect'); const current=sel.value; const merged=new Map(); for(const n of (nodes||[])){ if(!n.node_id) continue; merged.set(n.node_id,{node_id:n.node_id,alias:n.alias||'',name:n.name||'',display_name:n.display_name||n.alias||n.name||n.node_id}); } for(const e of (addressBook||[])){ if(!e.node_id) continue; const existing=merged.get(e.node_id)||{node_id:e.node_id,name:'',display_name:e.node_id}; existing.alias=e.alias||existing.alias||''; existing.display_name=e.alias||existing.display_name||e.node_id; merged.set(e.node_id,existing);} const opts=['<option value="">Broadcast (^all)</option>']; const sorted=[...merged.values()].sort((a,b)=>(a.display_name||a.node_id).localeCompare(b.display_name||b.node_id)); for(const n of sorted){ const title=n.display_name||n.alias||n.name||n.node_id; const meta=n.node_id && n.node_id!==title ? ` (${n.node_id})` : ''; opts.push(`<option value="${esc(n.node_id)}">${esc(title+meta)}</option>`);} sel.innerHTML=opts.join(''); if([...sel.options].some(o=>o.value===current)) sel.value=current; updateComposerPlaceholder(); }
+function renderMessages(items){ const box=document.getElementById('messages'); box.innerHTML=items.map(m=>{ const fromLabel=m.from_label||m.from_id||''; const toLabel=m.to_label||m.to_id||''; const fromMeta=m.from_id&&m.from_id!==fromLabel?` (${esc(m.from_id)})`:''; const toMeta=m.to_id&&m.to_id!==toLabel?` (${esc(m.to_id)})`:''; return `<div class="bubble ${m.direction==='out'?'out':''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel)}${fromMeta} → ${esc(toLabel)}${toMeta}</div><div class="text">${esc(m.text||'')}</div></div>`; }).join(''); box.scrollTop=box.scrollHeight; }
+function aliasPrompt(nodeId,currentAlias=''){ document.getElementById('abNodeId').value=nodeId||''; document.getElementById('abAlias').value=currentAlias||''; document.querySelector('[data-tab="addressBookTab"]').click(); document.getElementById('abAlias').focus(); }
+function renderNodes(items){ currentNodes=items; const box=document.getElementById('nodes'); if(!items.length){ box.innerHTML='<li>No nodes cached yet.</li>'; return; } box.innerHTML=items.map(n=>{ const title=n.display_name||n.name||n.node_id; const aliasMeta=n.alias?'<div class="muted">Alias active</div>':''; return `<li><div class="row"><div><strong>${esc(title)}</strong><div class="muted">${esc(n.node_id)} · ${esc(n.hw_model||'')}</div>${aliasMeta}</div><button class="secondary smallbtn" onclick="aliasPrompt('${esc(n.node_id)}','${esc(n.alias||'')}')">Alias</button></div></li>`; }).join(''); }
+function renderAddressBook(items){ const box=document.getElementById('addressBook'); if(!items.length){ box.innerHTML='<li>No aliases saved yet.</li>'; return; } box.innerHTML=items.map(e=>`<li><div class="row"><div><strong>${esc(e.alias)}</strong><div class="muted">${esc(e.node_id)}</div></div><div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectRecipient('${esc(e.node_id)}')">Message</button><button class="secondary smallbtn" onclick="deleteAlias('${esc(e.node_id)}')">Delete</button></div></div></li>`).join(''); }
+function renderStats(status,state,messages,addressBookCount){ const stats=[['Version',status.version||'-'],['Proxy',status.proxy_connected?'Connected':'Disconnected'],['Backend',status.backend_connected?'Connected':'Disconnected'],['Messages cached',messages.length],['Messages RX',state.messages_rx??0],['Messages TX',state.messages_tx??0],['Packets RX seen',state.packets_rx_seen??0],['Relay seen (estimate)',state.relay_seen_estimate??0],['Multi-hop seen (estimate)',state.multi_hop_seen_estimate??0],['Known nodes',(state.nodes||[]).length],['Selected TX channel',state.channel??0],['Address book entries',addressBookCount],['Last sync',status.last_sync||'-']]; document.getElementById('statsGrid').innerHTML=stats.map(([k,v])=>`<div class="stat"><div class="label">${esc(k)}</div><div class="value ${String(v).includes('Disconnected')?'bad':''}">${esc(v)}</div></div>`).join(''); }
+function renderChannels(payload){ const box=document.getElementById('channelsList'); const status=document.getElementById('channelsStatus'); const items=payload.channels||[]; if(!items.length){ box.innerHTML='<li>No channel data available.</li>'; } else { box.innerHTML=items.map(ch=>{ const tag=ch.selected_tx?'<span class="ok">TX selected</span>':`<span class="muted">${esc(ch.role||'')}</span>`; const deleteBtn=String(ch.role||'').toUpperCase()==='PRIMARY'?'':`<button class="secondary smallbtn" onclick="deleteChannel(${Number(ch.index)})">Delete</button>`; return `<li><div class="row"><div><strong>${esc(ch.name||'(unnamed)')}</strong><div class="muted">Index ${esc(ch.index)} · ${esc(ch.role||'')}</div>${tag}</div><div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectTxChannel(${Number(ch.index)})">Use for TX</button>${deleteBtn}</div></div></li>`; }).join(''); } status.textContent=payload.ok?`Loaded ${items.length} channels. Selected TX index: ${payload.selected_index ?? '-'}`:(payload.error||'Unable to read channels'); status.className='inline-status '+(payload.ok?'ok':''); }
+async function refreshChannels(){ try{ renderChannels(await getJson('/api/channels')); } catch(err){ renderChannels({ok:false,error:err.message,channels:[]}); } }
+async function selectTxChannel(channelIndex){ try{ const payload=await getJson('/api/channels/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_index:channelIndex})}); document.getElementById('channelsStatus').textContent=`TX channel set to index ${payload.selected_index} (${payload.channel_name||'unnamed'}) and verified.`; document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
+async function joinChannelUrl(){ const url=document.getElementById('channelUrlInput').value.trim(); const addOnly=document.getElementById('channelAddOnly').checked; if(!url) return alert('Channel URL is required.'); try{ const payload=await getJson('/api/channels/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,add_only:addOnly})}); document.getElementById('channelsStatus').textContent=`Join applied and verified. Channel count: ${payload.count ?? '-'}.`; document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
+async function deleteChannel(channelIndex){ if(!confirm(`Delete channel index ${channelIndex}?`)) return; try{ const payload=await getJson(`/api/channels/${channelIndex}`,{method:'DELETE'}); document.getElementById('channelsStatus').textContent=`Channel ${payload.deleted_index} deleted and channel list refreshed.`; document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
+async function saveAlias(){ const nodeId=document.getElementById('abNodeId').value.trim(); const alias=document.getElementById('abAlias').value.trim(); if(!nodeId||!alias) return alert('Node ID and alias are required.'); const res=await fetch('/api/address-book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId,alias})}); const data=await res.json(); if(!data.ok) return alert(data.error||'Failed to save alias.'); document.getElementById('abNodeId').value=''; document.getElementById('abAlias').value=''; await refreshAll(); }
+async function deleteAlias(nodeId){ await fetch(`/api/address-book/${encodeURIComponent(nodeId)}`,{method:'DELETE'}); await refreshAll(); }
+function selectRecipient(nodeId){ const sel=document.getElementById('recipientSelect'); if([...sel.options].some(o=>o.value===nodeId)){ sel.value=nodeId; document.querySelector('[data-tab="messagesTab"]').click(); updateComposerPlaceholder(); document.getElementById('messageInput').focus(); } }
+async function refreshAll(){ const [status,state,nodes,messages,addressBook]=await Promise.all([getJson('/api/status'),getJson('/api/state'),getJson('/api/nodes'),getJson('/api/messages?limit=100'),getJson('/api/address-book')]); renderMessages(messages); renderNodes(nodes); renderAddressBook(addressBook); renderRecipientOptions(nodes,addressBook); renderStats(status,state,messages,addressBook.length); await refreshChannels(); }
+document.querySelectorAll('.tabbtn').forEach(btn=>btn.addEventListener('click',()=>{ document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active')); document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('active')); btn.classList.add('active'); document.getElementById(btn.dataset.tab).classList.add('active'); }));
+document.getElementById('sendBtn').addEventListener('click', async()=>{ const input=document.getElementById('messageInput'); const text=input.value.trim(); if(!text) return; const res=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,dest:document.getElementById('recipientSelect').value})}); const data=await res.json().catch(()=>({})); if(!res.ok || data.ok===false) return alert(data.error||'Failed to send message.'); input.value=''; await refreshAll(); });
+document.getElementById('messageInput').addEventListener('keydown', async(e)=>{ if(e.key==='Enter'){ e.preventDefault(); document.getElementById('sendBtn').click(); }});
+document.getElementById('recipientSelect').addEventListener('change', updateComposerPlaceholder); document.getElementById('saveAliasBtn').addEventListener('click', saveAlias); document.getElementById('refreshBtn').addEventListener('click', refreshAll); document.getElementById('clearBtn').addEventListener('click', async()=>{ await fetch('/api/clear',{method:'POST'}); await refreshAll(); }); document.getElementById('exportCfgBtn').addEventListener('click', ()=>{ window.location.href='/api/config/export'; });
+document.getElementById('importCfgInput').addEventListener('change', async(e)=>{ const file=e.target.files[0]; if(!file) return; const fd=new FormData(); fd.append('file',file); const res=await fetch('/api/config/import',{method:'POST',body:fd}); const data=await res.json(); alert(data.message||data.error||'Done'); });
+document.getElementById('refreshChannelsBtn').addEventListener('click', refreshChannels); document.getElementById('joinChannelBtn').addEventListener('click', joinChannelUrl);
+refreshAll().catch(console.error); setInterval(()=>refreshAll().catch(console.error),5000);
+</script>
 </body>
 </html>

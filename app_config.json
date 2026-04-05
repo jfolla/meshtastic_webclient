@@ -1,10 +1,11 @@
 {
-  "version": "0.6.4",
+  "version": "0.6.9",
   "node": {
     "mode": "serial",
     "host": "",
     "port": "/dev/ttyUSB0",
-    "channel": 0
+    "channel": 0,
+    "tcp_port": 4403
   },
   "proxy": {
     "host": "127.0.0.1",

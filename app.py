@@ -14,7 +14,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.6.4"
+VERSION = "0.6.9"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"
@@ -363,6 +363,64 @@ def api_address_book_delete(node_id: str):
     if existed:
         save_address_book()
     return jsonify({"ok": True, "deleted": existed})
+
+
+@app.route("/api/channels")
+def api_channels():
+    try:
+        resp = proxy_request({"type": "get_channels"}, timeout=6.0)
+        if resp.get("type") == "error":
+            return jsonify({"ok": False, "error": resp.get("error")}), 500
+        return jsonify(resp)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/channels/select", methods=["POST"])
+def api_channels_select():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        channel_index = int(data.get("channel_index", 0))
+    except Exception:
+        return jsonify({"ok": False, "error": "invalid channel_index"}), 400
+    try:
+        resp = proxy_request({"type": "set_tx_channel", "channel_index": channel_index}, timeout=6.0)
+        if resp.get("type") == "error" or not resp.get("ok"):
+            return jsonify({"ok": False, "error": resp.get("error") or "proxy rejected channel selection", "details": resp}), 500
+        cfg = load_config(config_path_runtime)
+        cfg.setdefault("node", {})["channel"] = channel_index
+        with open(config_path_runtime, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, indent=2, ensure_ascii=False)
+        return jsonify({"ok": True, **resp})
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/channels/join", methods=["POST"])
+def api_channels_join():
+    data = request.get_json(force=True, silent=True) or {}
+    url = (data.get("url") or "").strip()
+    add_only = bool(data.get("add_only", False))
+    if not url:
+        return jsonify({"ok": False, "error": "missing URL"}), 400
+    try:
+        resp = proxy_request({"type": "join_channel_url", "url": url, "add_only": add_only}, timeout=12.0)
+        if resp.get("type") == "error" or not resp.get("ok"):
+            return jsonify({"ok": False, "error": resp.get("error") or "proxy join failed", "details": resp}), 500
+        return jsonify(resp)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+
+
+@app.route("/api/channels/<int:channel_index>", methods=["DELETE"])
+def api_channels_delete(channel_index: int):
+    try:
+        resp = proxy_request({"type": "delete_channel", "channel_index": channel_index}, timeout=8.0)
+        if resp.get("type") == "error" or not resp.get("ok"):
+            return jsonify({"ok": False, "error": resp.get("error") or "proxy delete failed", "details": resp}), 500
+        return jsonify(resp)
+    except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
 
 
 def main():
