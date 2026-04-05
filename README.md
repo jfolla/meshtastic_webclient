@@ -1,272 +1,300 @@
 # Meshtastic Web Chat
 
-**Version:** v0.7.2-beta  
-**Status:** Level B beta  
-**Internal folder path:** `meshtastic_webchat`
+**Version:** v0.6.9  
+**Project root:** `meshtastic_webchat`  
+**Service:** `meshtastic-webchat.service`
 
-## Project purpose
+---
 
-Meshtastic Web Chat is a lightweight browser-based interface for Meshtastic nodes, designed to make day-to-day messaging and node management easier from a desktop browser.
+# Overview
 
-This project uses a **proxy-first architecture**:
+Meshtastic Web Chat provides a **browser-based interface** for interacting with a Meshtastic node using a **proxy-first architecture**.
 
-- the browser talks to the local Flask web application;
-- the web application talks to the embedded local proxy;
-- the proxy keeps the single live connection to the real Meshtastic node.
+Unlike the standard Meshtastic CLI or mobile apps, this project ensures:
 
-This design helps reduce the instability that can happen when multiple clients connect directly to the same Meshtastic TCP endpoint.
+- a **single connection** to the node (serial or TCP)
+- a **stable backend proxy**
+- a **web UI for interaction**
 
-## What this beta adds
+---
 
-This **Level B beta** introduces the first room/channel management workflow that can actually help a node **join a new channel** from a Meshtastic channel URL or hash.
+# Architecture
 
-The goal of this beta is to provide a visible and testable workflow for:
-
-1. pasting a channel URL or hash,
-2. importing it as a room,
-3. previewing the room locally,
-4. backing up the current node channel,
-5. applying the new room to the node,
-6. rolling back the last backup.
-
-## Main features
-
-- browser-based chat UI
-- broadcast and direct messages
-- address book (`node_id -> alias`)
-- embedded local proxy
-- room import/apply/rollback beta workflow
-- English UI
-- `systemd` service included
-- local JSON config and storage files
-
-## Interface layout
-
-The interface is organized into visible tabs:
-
-- **Chat**
-  - active room summary
-  - quick status cards
-  - messages
-  - composer for broadcast and direct messages
-- **Channels**
-  - paste channel URL / hash
-  - import room
-  - apply room to node
-  - rollback last backup
-  - saved rooms
-  - backups
-- **Address Book**
-  - local alias mapping
-- **Nodes**
-  - cached nodes and quick actions
-- **Config**
-  - export/import local app config
-- **Debug**
-  - raw diagnostic state
-
-## Screenshot
-
-![Meshtastic Web Chat UI](docs/screenshot-ui-v0.7.2-beta.jpg)
-
-## Installation
-
-### 1. Extract the package
-
-Extract the ZIP so that the project ends up in:
-
-```text
-/home/meshtastic/meshtastic_webchat
+```
+                +---------------------+
+                |      Browser        |
+                |  (UI - index.html) |
+                +----------+----------+
+                           |
+                           v
+                +---------------------+
+                |       app.py        |
+                |   (Flask Web App)   |
+                +----------+----------+
+                           |
+                           v
+                +---------------------+
+                |    proxy/main.py    |
+                |  (Meshtastic API)   |
+                +----------+----------+
+                           |
+          +----------------+----------------+
+          |                                 |
+          v                                 v
+   Serial Interface                   TCP Interface
+ (/dev/ttyUSB0)                   (host:tcp_port)
 ```
 
-### 2. Create or reuse the virtual environment
+---
 
-```bash
-cd /home/meshtastic/meshtastic_webchat
+# Key Concepts
+
+## Proxy-first model
+
+- Only **one connection** exists to the node
+- Proxy manages:
+  - messaging
+  - channel operations
+  - node state
+- UI communicates only with backend
+
+## Why this matters
+
+- prevents serial conflicts
+- avoids multiple clients fighting for the node
+- allows safe channel configuration from web
+
+---
+
+# Features
+
+## Core
+- systemd-managed service
+- automatic proxy startup
+- serial + TCP support
+- message send/receive
+- node discovery
+- address book
+
+## UI
+Tabbed interface:
+- Messages
+- Statistics
+- Nodes
+- Address Book
+- Configuration
+- Channels
+
+## Channels (extended)
+- list channels
+- set TX channel
+- join via URL
+- delete secondary channels
+- **post-operation verification**
+
+---
+
+# Repository Structure
+
+```
+meshtastic_webchat/
+├── app.py
+├── app_config.json
+├── address_book.json
+├── start_webchat.sh
+├── meshtastic-webchat.service
+├── requirements.txt
+├── README.md
+├── proxy/
+│   └── main.py
+├── templates/
+│   └── index.html
+└── docs/
+```
+
+---
+
+# Installation
+
+```
+cd /home/meshtastic
+cp -a meshtastic_webchat meshtastic_webchat.bak.$(date +%Y%m%d_%H%M%S)
+
+cd meshtastic_webchat
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+pip install -r requirements.txt
+chmod +x start_webchat.sh
 ```
 
-### 3. Configure the application
+---
+
+# Configuration
 
 Edit:
 
-```text
+```
 /home/meshtastic/meshtastic_webchat/app_config.json
 ```
 
-#### Serial example
+## Serial node
 
-```json
-{
-  "version": "0.7.2-beta",
-  "node": {
-    "mode": "serial",
-    "host": "",
-    "port": "/dev/ttyUSB0",
-    "channel": 0
-  },
-  "web": {
-    "listen_host": "0.0.0.0",
-    "listen_port": 8088,
-    "ssl_adhoc": true
-  },
-  "ui": {
-    "default_language": "en"
-  }
+```
+"node": {
+  "mode": "serial",
+  "port": "/dev/ttyUSB0",
+  "channel": 0
 }
 ```
 
-#### TCP example
+## TCP node
 
-```json
-{
-  "version": "0.7.2-beta",
-  "node": {
-    "mode": "tcp",
-    "host": "192.168.0.18",
-    "port": "",
-    "channel": 0
-  },
-  "web": {
-    "listen_host": "0.0.0.0",
-    "listen_port": 8088,
-    "ssl_adhoc": true
-  },
-  "ui": {
-    "default_language": "en"
-  }
+```
+"node": {
+  "mode": "tcp",
+  "host": "192.168.1.50",
+  "tcp_port": 4403,
+  "channel": 0
 }
 ```
 
-### 4. Install the systemd service
+---
 
-Copy the provided service file:
+# Service setup
 
-```bash
-sudo cp meshtastic-webchat.service /etc/systemd/system/meshtastic-webchat.service
+```
+sudo cp meshtastic-webchat.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable meshtastic-webchat
 sudo systemctl start meshtastic-webchat
 ```
 
-### 5. Follow the logs
+---
 
-```bash
-journalctl -u meshtastic-webchat -f
+# Access UI
+
+```
+https://SERVER_IP:8088
 ```
 
-## How it works
+---
 
-### Chat
+# Usage
 
-Use the **Chat** tab for daily operation:
+## Messages
+- send broadcast
+- send direct messages
 
-- read messages
-- send broadcast messages
-- pick a specific node for direct messaging
+## Nodes
+- view discovered nodes
+- select recipients
 
-### Channels (Level B beta)
+## Address Book
+- map node_id → alias
+- simplify messaging
 
-Use the **Channels** tab to test room/channel joining.
+## Channels
+- change TX channel
+- join channel via URL
+- verify channel applied
 
-#### Join a new channel from URL/hash
+---
 
-1. Paste a Meshtastic channel URL or `#...` hash into **Paste channel URL / hash**.
-2. Optionally enter a local room name.
-3. Click **Import room**.
-4. The room is stored locally.
-5. Click **Apply** on the saved room entry.
-6. The current primary channel is backed up before apply.
-7. The node is switched to the imported room using the Meshtastic CLI.
+# Channel Logic (Important)
 
-#### Rollback
+When setting a channel:
 
-Use **Rollback last backup** to restore the previous room/channel state.
+1. proxy updates internal TX index
+2. proxy requests node channel list
+3. verifies index exists
+4. returns validated result
 
-## Important beta notes
+This avoids:
+- silent failures
+- inconsistent UI state
+- broken serial workflows
 
-This is a **beta** implementation of channel join workflow.
+---
 
-Current assumptions and limitations:
+# Troubleshooting
 
-- only the **last backup** is restored by the rollback button;
-- the workflow is designed for **explicit apply**, not automatic channel switching;
-- this modifies the **real node channel configuration**;
-- you should treat this feature as experimental until fully validated on your setup.
+## Proxy empty response
 
-## Files used by the application
-
-- `app_config.json` – runtime configuration
-- `address_book.json` – local alias mapping
-- `rooms.json` – saved imported rooms
-- `room_backups.json` – backup history for channel rollback
-- `webchat_cache.db` – cached message and state storage
-
-## systemd behavior
-
-This project is shipped as a **single service**:
-
-- `meshtastic-webchat.service`
-
-The service runs `start_webchat.sh`, which:
-
-1. reads `app_config.json`,
-2. starts the embedded proxy,
-3. waits for the local proxy socket,
-4. starts the Flask web application.
-
-## Troubleshooting
-
-### The web app starts but cannot reach the node
+Usually means:
+- proxy crash
+- API mismatch
+- wrong meshtastic library version
 
 Check:
 
-```bash
-journalctl -u meshtastic-webchat -f
+```
+journalctl -u meshtastic-webchat -n 100
 ```
 
-Then verify the node target in `app_config.json`.
+---
 
-### Serial mode does not work
+## Serial busy
 
-Make sure the service user can access the serial device:
-
-```bash
-sudo usermod -a -G dialout meshtastic
+```
+lsof /dev/ttyUSB0
 ```
 
-Then log out or reboot.
+---
 
-### TCP mode times out
+## TCP issues
 
-Make sure the node is reachable and that no competing direct TCP client is constantly interfering with the same node.
+```
+nc -vz HOST PORT
+```
 
-### The UI looks old or unchanged
+---
 
-Do a hard refresh in the browser and make sure the installed `templates/index.html` matches this release.
+# Version Compatibility
 
-## Changelog
+Requires compatible `meshtastic` Python library.
 
-### v0.7.2-beta
+Check:
 
-- rebuilt the UI as **real visible tabs**
-- moved room/channel join workflow into a dedicated **Channels** tab
-- kept direct messaging and address book behavior
-- kept Level B beta room import/apply/rollback flow
-- updated README to describe the beta clearly
+```
+pip show meshtastic
+```
 
-### v0.7.0-beta
+---
 
-- first beta of Level B room management
-- room import, apply, rollback introduced
+# Changelog
 
-### Stable baseline
+## v0.6.9
+- tabbed UI integrated
+- channels tab added
+- verified channel selection
+- TCP support extended
+- proxy error handling fixed
+- start script bug fixed (${PORT})
+- full documentation
 
-The project baseline before this beta line was the stable `v0.6.4` generation.
+## v0.6.8
+- startup stabilization
+- proxy reliability improvements
 
-## License / project note
+## v0.6.7
+- channel verification added
 
-This repository is currently focused on practical usability and iterative testing. Treat beta releases as experimental and keep backups of working versions before replacing a known-good deployment.
+## v0.6.6
+- initial channel management
+
+## v0.6.5
+- tabbed UI introduction
+
+---
+
+# Security Notes
+
+- designed for internal/trusted networks
+- use firewall rules if exposed
+- ad-hoc SSL is not production-grade
+
+---
+
+# License
+
+See LICENSE file
