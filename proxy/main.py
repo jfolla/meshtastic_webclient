@@ -22,6 +22,7 @@ import meshtastic.tcp_interface
 LOGGER = logging.getLogger("meshtastic_proxy")
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "proxy_messages.db"
+CHANNEL_RETRY_DELAYS = (0.2, 0.6, 1.2)
 
 
 def now_iso() -> str:
@@ -279,21 +280,74 @@ class UpstreamManager:
             raise RuntimeError("Upstream not connected")
         return iface
 
-    def _refresh_channels(self):
+    def _get_node(self):
         iface = self._get_iface()
+        getter = getattr(iface, "getNode", None)
+        if callable(getter):
+            for args in [(), ("^local",), (0,)]:
+                try:
+                    node = getter(*args)
+                    if node is not None:
+                        return node
+                except TypeError:
+                    continue
+                except Exception:
+                    break
         node = getattr(iface, "localNode", None)
         if node is None:
-            raise RuntimeError("localNode not available")
-        req = getattr(node, "requestChannels", None)
-        if callable(req):
-            req()
-            time.sleep(0.8)
-        channels = getattr(node, "channels", None)
+            raise RuntimeError("local node not available")
+        return node
+
+    def _normalize_channels(self, channels):
         if channels is None:
-            raise RuntimeError("channel list not available")
+            return None
         if isinstance(channels, dict):
-            channels = [channels[k] for k in sorted(channels.keys())]
+            try:
+                return [channels[k] for k in sorted(channels.keys())]
+            except Exception:
+                return list(channels.values())
         return list(channels)
+
+    def _try_get_channel_url(self, node):
+        getter = getattr(node, "getURL", None)
+        if not callable(getter):
+            return None
+        for kwargs in ({"includeAll": True}, {}):
+            try:
+                value = getter(**kwargs) if kwargs else getter()
+                if value:
+                    return str(value)
+            except TypeError:
+                try:
+                    value = getter()
+                    if value:
+                        return str(value)
+                except Exception:
+                    continue
+            except Exception:
+                continue
+        return None
+
+    def _refresh_channels(self):
+        node = self._get_node()
+        req = getattr(node, "requestChannels", None)
+        last_error = None
+        if callable(req):
+            for delay in CHANNEL_RETRY_DELAYS:
+                try:
+                    req()
+                except Exception as exc:
+                    last_error = exc
+                time.sleep(delay)
+                channels = self._normalize_channels(getattr(node, "channels", None))
+                if channels is not None:
+                    return channels
+        channels = self._normalize_channels(getattr(node, "channels", None))
+        if channels is not None:
+            return channels
+        if last_error is not None:
+            LOGGER.debug("requestChannels() did not populate channels: %s", last_error)
+        return None
 
     @staticmethod
     def _channel_name(ch):
@@ -319,6 +373,17 @@ class UpstreamManager:
         channels = self._refresh_channels()
         with self.state_lock:
             current_tx = int(self.state.channel)
+        if channels is None:
+            node = self._get_node()
+            return {
+                "ok": True,
+                "channels": [],
+                "selected_index": current_tx,
+                "count": 0,
+                "channels_unavailable": True,
+                "channel_url": self._try_get_channel_url(node),
+                "message": "URL-only mode: this node/API combination does not expose a structured channel list. URL-based channel operations are still available.",
+            }
         items = []
         for idx, ch in enumerate(channels):
             items.append({
@@ -331,12 +396,21 @@ class UpstreamManager:
 
     def set_tx_channel(self, channel_index: int) -> dict[str, Any]:
         channels = self._refresh_channels()
+        with self.state_lock:
+            self.state.channel = channel_index
+            self.state.tx_channel_verified = channels is not None
+        if channels is None:
+            return {
+                "ok": True,
+                "verified": False,
+                "selected_index": channel_index,
+                "channel_name": "",
+                "role": "",
+                "warning": "Channel list unavailable on this node/API combination. TX index saved locally.",
+            }
         if channel_index < 0 or channel_index >= len(channels):
             raise RuntimeError(f"channel index out of range: {channel_index}")
         ch = channels[channel_index]
-        with self.state_lock:
-            self.state.channel = channel_index
-            self.state.tx_channel_verified = True
         return {
             "ok": True,
             "verified": True,
@@ -346,23 +420,41 @@ class UpstreamManager:
         }
 
     def join_channel_url(self, url: str, add_only: bool = False) -> dict[str, Any]:
-        iface = self._get_iface()
-        node = getattr(iface, "localNode", None)
-        if node is None:
-            raise RuntimeError("localNode not available")
+        node = self._get_node()
         setter = getattr(node, "setURL", None)
         if not callable(setter):
             raise RuntimeError("setURL() not supported by installed meshtastic library")
-        setter(url, addOnly=bool(add_only))
+        last_error = None
+        for kwargs in ({"addOnly": bool(add_only)}, {"add_only": bool(add_only)}, {}):
+            try:
+                setter(url, **kwargs) if kwargs else setter(url)
+                last_error = None
+                break
+            except TypeError as exc:
+                last_error = exc
+                continue
+            except Exception as exc:
+                last_error = exc
+                break
+        if last_error is not None:
+            raise RuntimeError(str(last_error))
+        time.sleep(1.0)
         channels = self._refresh_channels()
-        return {"ok": True, "verified": True, "count": len(channels)}
+        channel_url = self._try_get_channel_url(node)
+        return {
+            "ok": True,
+            "verified": bool(channel_url) or channels is not None,
+            "count": len(channels) if channels is not None else 0,
+            "channels_unavailable": channels is None,
+            "channel_url": channel_url,
+            "message": "Channel URL applied using the active backend connection.",
+        }
 
     def delete_channel(self, channel_index: int) -> dict[str, Any]:
-        iface = self._get_iface()
-        node = getattr(iface, "localNode", None)
-        if node is None:
-            raise RuntimeError("localNode not available")
+        node = self._get_node()
         channels = self._refresh_channels()
+        if channels is None:
+            raise RuntimeError("Channel list is not available on this node/API combination")
         if channel_index < 0 or channel_index >= len(channels):
             raise RuntimeError(f"channel index out of range: {channel_index}")
         role = self._channel_role(channels[channel_index]).upper()

@@ -14,7 +14,7 @@ from typing import Any
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.6.9"
+VERSION = "0.7.2"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"

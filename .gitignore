@@ -64,6 +64,5 @@ htmlcov/
 .env.*
 !.env.example
 
-# Project runtime data
-webchat_cache.db
-webchat_cache.db-*
+# Optional local config overrides
+app_config.local.json
