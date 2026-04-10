@@ -165,7 +165,6 @@ python -m pip show meshtastic
 python -m pip freeze | grep -i meshtastic
 ```
 
-```
 
 ## License
 
