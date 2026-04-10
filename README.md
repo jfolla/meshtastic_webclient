@@ -1,6 +1,6 @@
 # Meshtastic Web Chat
 
-**Version:** v0.7.2  
+**Version:** v0.6.9  
 **Service:** `meshtastic-webchat.service`
 
 Meshtastic Web Chat is a browser-based interface for Meshtastic nodes built around a **single active backend connection**. The web UI talks to `app.py`, which talks to the local proxy in `proxy/main.py`. The proxy owns the real serial or TCP connection to the radio.
@@ -150,7 +150,7 @@ There are two channel modes:
 If the TCP node shows **URL-only mode**, the connection is still valid. It means the node does not currently expose a structured channel list through the installed Meshtastic Python API, even though URL-based channel operations still work.
 
 ### `Could not exclusive lock port /dev/ttyUSB0`
-This should not happen on a TCP node. Channel actions must reuse the active backend connection instead of opening a new serial session. v0.7.2 keeps channel operations bound to the live proxy connection.
+This should not happen on a TCP node. Channel actions must reuse the active backend connection instead of opening a new serial session. v0.6.9 keeps channel operations bound to the live proxy connection.
 
 ### Service does not start
 ```bash
@@ -165,17 +165,6 @@ python -m pip show meshtastic
 python -m pip freeze | grep -i meshtastic
 ```
 
-## GitHub publishing
-
-This package is already structured for GitHub. Typical first push:
-
-```bash
-git init
-git add .
-git commit -m "Release v0.7.2"
-git branch -M main
-git remote add origin YOUR_REPO_URL
-git push -u origin main
 ```
 
 ## License
