@@ -2,42 +2,57 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
+import os
 import signal
 import socketserver
 import sqlite3
 import threading
 import time
-from collections import deque
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
 
+from google.protobuf.json_format import MessageToDict
 from pubsub import pub
+
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
+from meshtastic.protobuf import apponly_pb2
 
 LOGGER = logging.getLogger("meshtastic_proxy")
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "proxy_messages.db"
-CHANNEL_RETRY_DELAYS = (0.2, 0.6, 1.2)
+BACKUPS_PATH = BASE_DIR / "room_backups.json"
+MAX_BACKUPS = 20
 
 
 def now_iso() -> str:
-    return datetime.now().isoformat(timespec="seconds")
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 def load_config(path: str) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(path, "r", encoding="utf-8") as handle:
+        return json.load(handle)
+
+
+def atomic_save_json(path: Path, payload: Any, mode: int = 0o600) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
 
 
 class MessageStore:
     def __init__(self, db_path: Path):
         self.db_path = db_path
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self._init_db()
 
     def _connect(self):
@@ -46,8 +61,8 @@ class MessageStore:
         conn.execute("PRAGMA busy_timeout=5000")
         return conn
 
-    def _init_db(self):
-        with self._connect() as conn:
+    def _init_db(self) -> None:
+        with self.lock, self._connect() as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -61,17 +76,22 @@ class MessageStore:
                 )
                 """
             )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_proxy_messages_id_desc ON messages(id DESC)")
 
-    def add(self, direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict[str, Any]] = None):
+    def add(self, direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict[str, Any]] = None) -> int:
         raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
         with self.lock, self._connect() as conn:
             cur = conn.execute(
                 "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
                 (now_iso(), direction, from_id, to_id, text, raw_json),
             )
-            return cur.lastrowid
+            return int(cur.lastrowid)
 
     def list(self, limit: int = 100) -> list[dict[str, Any]]:
+        try:
+            limit = int(limit)
+        except (TypeError, ValueError):
+            limit = 100
         limit = max(1, min(limit, 500))
         with self.lock, self._connect() as conn:
             rows = conn.execute(
@@ -80,16 +100,13 @@ class MessageStore:
             ).fetchall()
         rows.reverse()
         return [
-            {
-                "id": r[0],
-                "ts": r[1],
-                "direction": r[2],
-                "from_id": r[3],
-                "to_id": r[4],
-                "text": r[5],
-            }
+            {"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5]}
             for r in rows
         ]
+
+    def clear(self) -> None:
+        with self.lock, self._connect() as conn:
+            conn.execute("DELETE FROM messages")
 
 
 @dataclass
@@ -98,7 +115,6 @@ class ProxyState:
     mode: str = "serial"
     target: str = ""
     channel: int = 0
-    tx_channel_verified: bool = False
     last_connect_at: Optional[str] = None
     last_disconnect_at: Optional[str] = None
     last_error: Optional[str] = None
@@ -109,6 +125,8 @@ class ProxyState:
     multi_hop_seen_estimate: int = 0
     last_packet_at: Optional[str] = None
     nodes: list[dict[str, Any]] = field(default_factory=list)
+    active_room_url: Optional[str] = None
+    active_room_checked_at: Optional[str] = None
 
     def snapshot(self) -> dict[str, Any]:
         return asdict(self)
@@ -120,19 +138,21 @@ class UpstreamManager:
         self.state = state
         self.store = store
         self.iface = None
-        self.iface_lock = threading.Lock()
-        self.state_lock = threading.Lock()
+        self.iface_lock = threading.RLock()
+        self.state_lock = threading.RLock()
+        self.backup_lock = threading.RLock()
+        self.room_operation_lock = threading.Lock()
         self.stop_event = threading.Event()
         self.poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="proxy-poller")
         self.worker_thread = threading.Thread(target=self._worker, daemon=True, name="proxy-worker")
         self._subscribed = False
         self._subscribe_once()
 
-    def start(self):
+    def start(self) -> None:
         self.worker_thread.start()
         self.poll_thread.start()
 
-    def stop(self):
+    def stop(self) -> None:
         self.stop_event.set()
         with self.iface_lock:
             iface = self.iface
@@ -142,8 +162,11 @@ class UpstreamManager:
                 iface.close()
             except Exception:
                 pass
+        for thread in (self.worker_thread, self.poll_thread):
+            if thread.is_alive():
+                thread.join(timeout=2.0)
 
-    def _subscribe_once(self):
+    def _subscribe_once(self) -> None:
         if self._subscribed:
             return
         pub.subscribe(self.on_text, "meshtastic.receive.text")
@@ -152,7 +175,7 @@ class UpstreamManager:
         pub.subscribe(self.on_connection_lost, "meshtastic.connection.lost")
         self._subscribed = True
 
-    def on_text(self, packet, interface=None):
+    def on_text(self, packet, interface=None) -> None:
         text = self._decode_text(packet)
         if not text:
             return
@@ -163,7 +186,7 @@ class UpstreamManager:
             self.state.messages_rx += 1
             self.state.last_packet_at = now_iso()
 
-    def on_receive(self, packet, interface=None):
+    def on_receive(self, packet, interface=None) -> None:
         relay_node = packet.get("relayNode")
         hop_start = packet.get("hopStart")
         hop_limit = packet.get("hopLimit")
@@ -175,17 +198,17 @@ class UpstreamManager:
             try:
                 if hop_start is not None and hop_limit is not None and int(hop_start) > int(hop_limit):
                     self.state.multi_hop_seen_estimate += 1
-            except Exception:
+            except (TypeError, ValueError):
                 pass
 
-    def on_connection_established(self, interface, topic=pub.AUTO_TOPIC):
+    def on_connection_established(self, interface, topic=pub.AUTO_TOPIC) -> None:
         with self.state_lock:
             self.state.upstream_connected = True
             self.state.last_connect_at = now_iso()
             self.state.last_error = None
         LOGGER.info("Connected to Meshtastic via %s -> %s", self.state.mode, self.state.target)
 
-    def on_connection_lost(self, interface=None, topic=pub.AUTO_TOPIC):
+    def on_connection_lost(self, interface=None, topic=pub.AUTO_TOPIC) -> None:
         with self.state_lock:
             self.state.upstream_connected = False
             self.state.last_disconnect_at = now_iso()
@@ -199,38 +222,37 @@ class UpstreamManager:
             except Exception:
                 pass
 
-    def _decode_text(self, packet: dict[str, Any]) -> Optional[str]:
+    @staticmethod
+    def _decode_text(packet: dict[str, Any]) -> Optional[str]:
         decoded = packet.get("decoded", {})
         text = decoded.get("text")
         if text:
-            return text
+            return str(text)
         payload = decoded.get("payload")
         if isinstance(payload, (bytes, bytearray)):
-            try:
-                return payload.decode("utf-8", errors="replace")
-            except Exception:
-                return repr(payload)
+            return payload.decode("utf-8", errors="replace")
         return None
 
     def _connect(self):
         node_cfg = self.config["node"]
-        mode = node_cfg["mode"]
+        mode = str(node_cfg["mode"]).lower()
         target = node_cfg["port"] if mode == "serial" else node_cfg["host"]
+        LOGGER.info("Opening Meshtastic %s connection to %s", mode, target)
         if mode == "serial":
             iface = meshtastic.serial_interface.SerialInterface(devPath=target)
+        elif mode == "tcp":
+            iface = meshtastic.tcp_interface.TCPInterface(hostname=target)
         else:
-            tcp_port = int(node_cfg.get("tcp_port", 4403) or 4403)
-            iface = meshtastic.tcp_interface.TCPInterface(hostname=target, portNumber=tcp_port)
-            target = f"{target}:{tcp_port}"
+            raise ValueError(f"Unsupported node mode: {mode}")
         with self.iface_lock:
             self.iface = iface
         with self.state_lock:
             self.state.mode = mode
-            self.state.target = target
+            self.state.target = str(target)
             self.state.channel = int(node_cfg.get("channel", 0))
         return iface
 
-    def _worker(self):
+    def _worker(self) -> None:
         while not self.stop_event.is_set():
             with self.iface_lock:
                 iface = self.iface
@@ -242,11 +264,12 @@ class UpstreamManager:
                         self.state.upstream_connected = False
                         self.state.last_error = str(exc)
                     LOGGER.warning("Upstream connect failed: %s", exc)
-                    time.sleep(5)
+                    self.stop_event.wait(5.0)
                     continue
-            time.sleep(1)
+            self.stop_event.wait(1.0)
 
-    def _poll_loop(self):
+    def _poll_loop(self) -> None:
+        counter = 0
         while not self.stop_event.is_set():
             with self.iface_lock:
                 iface = self.iface
@@ -255,229 +278,40 @@ class UpstreamManager:
                     nodes = getattr(iface, "nodes", {}) or {}
                     out = []
                     for node_id, node in nodes.items():
-                        user = node.get("user", {})
+                        user = node.get("user", {}) if isinstance(node, dict) else {}
                         out.append(
                             {
                                 "node_id": node_id,
                                 "name": user.get("longName") or user.get("shortName") or node_id,
                                 "short_name": user.get("shortName") or "",
                                 "hw_model": user.get("hwModel") or "",
-                                "last_heard": node.get("lastHeard"),
+                                "last_heard": node.get("lastHeard") if isinstance(node, dict) else None,
                             }
                         )
-                    out.sort(key=lambda x: (x["name"] or "", x["node_id"]))
+                    out.sort(key=lambda item: (str(item["name"] or "").lower(), str(item["node_id"])))
                     with self.state_lock:
                         self.state.nodes = out
+
+                    counter += 1
+                    if counter % 6 == 0:
+                        try:
+                            self.refresh_active_room()
+                        except Exception as exc:
+                            LOGGER.debug("Active channel refresh failed: %s", exc)
                 except Exception as exc:
                     with self.state_lock:
                         self.state.last_error = str(exc)
-            time.sleep(5)
-
-    def _get_iface(self):
-        with self.iface_lock:
-            iface = self.iface
-        if iface is None:
-            raise RuntimeError("Upstream not connected")
-        return iface
-
-    def _get_node(self):
-        iface = self._get_iface()
-        getter = getattr(iface, "getNode", None)
-        if callable(getter):
-            for args in [(), ("^local",), (0,)]:
-                try:
-                    node = getter(*args)
-                    if node is not None:
-                        return node
-                except TypeError:
-                    continue
-                except Exception:
-                    break
-        node = getattr(iface, "localNode", None)
-        if node is None:
-            raise RuntimeError("local node not available")
-        return node
-
-    def _normalize_channels(self, channels):
-        if channels is None:
-            return None
-        if isinstance(channels, dict):
-            try:
-                return [channels[k] for k in sorted(channels.keys())]
-            except Exception:
-                return list(channels.values())
-        return list(channels)
-
-    def _try_get_channel_url(self, node):
-        getter = getattr(node, "getURL", None)
-        if not callable(getter):
-            return None
-        for kwargs in ({"includeAll": True}, {}):
-            try:
-                value = getter(**kwargs) if kwargs else getter()
-                if value:
-                    return str(value)
-            except TypeError:
-                try:
-                    value = getter()
-                    if value:
-                        return str(value)
-                except Exception:
-                    continue
-            except Exception:
-                continue
-        return None
-
-    def _refresh_channels(self):
-        node = self._get_node()
-        req = getattr(node, "requestChannels", None)
-        last_error = None
-        if callable(req):
-            for delay in CHANNEL_RETRY_DELAYS:
-                try:
-                    req()
-                except Exception as exc:
-                    last_error = exc
-                time.sleep(delay)
-                channels = self._normalize_channels(getattr(node, "channels", None))
-                if channels is not None:
-                    return channels
-        channels = self._normalize_channels(getattr(node, "channels", None))
-        if channels is not None:
-            return channels
-        if last_error is not None:
-            LOGGER.debug("requestChannels() did not populate channels: %s", last_error)
-        return None
-
-    @staticmethod
-    def _channel_name(ch):
-        settings = getattr(ch, "settings", None)
-        if settings is not None:
-            name = getattr(settings, "name", None)
-            if name:
-                return str(name)
-        if isinstance(ch, dict):
-            return str(((ch.get("settings") or {}).get("name")) or ch.get("name") or "")
-        return ""
-
-    @staticmethod
-    def _channel_role(ch):
-        role = getattr(ch, "role", None)
-        if role is not None:
-            return getattr(role, "name", str(role))
-        if isinstance(ch, dict):
-            return str(ch.get("role") or "")
-        return ""
-
-    def get_channels(self) -> dict[str, Any]:
-        channels = self._refresh_channels()
-        with self.state_lock:
-            current_tx = int(self.state.channel)
-        if channels is None:
-            node = self._get_node()
-            return {
-                "ok": True,
-                "channels": [],
-                "selected_index": current_tx,
-                "count": 0,
-                "channels_unavailable": True,
-                "channel_url": self._try_get_channel_url(node),
-                "message": "URL-only mode: this node/API combination does not expose a structured channel list. URL-based channel operations are still available.",
-            }
-        items = []
-        for idx, ch in enumerate(channels):
-            items.append({
-                "index": idx,
-                "name": self._channel_name(ch),
-                "role": self._channel_role(ch),
-                "selected_tx": idx == current_tx,
-            })
-        return {"ok": True, "channels": items, "selected_index": current_tx, "count": len(items)}
-
-    def set_tx_channel(self, channel_index: int) -> dict[str, Any]:
-        channels = self._refresh_channels()
-        with self.state_lock:
-            self.state.channel = channel_index
-            self.state.tx_channel_verified = channels is not None
-        if channels is None:
-            return {
-                "ok": True,
-                "verified": False,
-                "selected_index": channel_index,
-                "channel_name": "",
-                "role": "",
-                "warning": "Channel list unavailable on this node/API combination. TX index saved locally.",
-            }
-        if channel_index < 0 or channel_index >= len(channels):
-            raise RuntimeError(f"channel index out of range: {channel_index}")
-        ch = channels[channel_index]
-        return {
-            "ok": True,
-            "verified": True,
-            "selected_index": channel_index,
-            "channel_name": self._channel_name(ch),
-            "role": self._channel_role(ch),
-        }
-
-    def join_channel_url(self, url: str, add_only: bool = False) -> dict[str, Any]:
-        node = self._get_node()
-        setter = getattr(node, "setURL", None)
-        if not callable(setter):
-            raise RuntimeError("setURL() not supported by installed meshtastic library")
-        last_error = None
-        for kwargs in ({"addOnly": bool(add_only)}, {"add_only": bool(add_only)}, {}):
-            try:
-                setter(url, **kwargs) if kwargs else setter(url)
-                last_error = None
-                break
-            except TypeError as exc:
-                last_error = exc
-                continue
-            except Exception as exc:
-                last_error = exc
-                break
-        if last_error is not None:
-            raise RuntimeError(str(last_error))
-        time.sleep(1.0)
-        channels = self._refresh_channels()
-        channel_url = self._try_get_channel_url(node)
-        return {
-            "ok": True,
-            "verified": bool(channel_url) or channels is not None,
-            "count": len(channels) if channels is not None else 0,
-            "channels_unavailable": channels is None,
-            "channel_url": channel_url,
-            "message": "Channel URL applied using the active backend connection.",
-        }
-
-    def delete_channel(self, channel_index: int) -> dict[str, Any]:
-        node = self._get_node()
-        channels = self._refresh_channels()
-        if channels is None:
-            raise RuntimeError("Channel list is not available on this node/API combination")
-        if channel_index < 0 or channel_index >= len(channels):
-            raise RuntimeError(f"channel index out of range: {channel_index}")
-        role = self._channel_role(channels[channel_index]).upper()
-        if role == "PRIMARY":
-            raise RuntimeError("refusing to delete PRIMARY channel")
-        deleter = getattr(node, "deleteChannel", None)
-        if not callable(deleter):
-            raise RuntimeError("deleteChannel() not supported by installed meshtastic library")
-        deleter(channel_index)
-        channels = self._refresh_channels()
-        return {"ok": True, "verified": True, "count": len(channels), "deleted_index": channel_index}
+            self.stop_event.wait(5.0)
 
     def send_text(self, text: str, destination_id: Optional[str] = None) -> None:
         with self.iface_lock:
             iface = self.iface
         if iface is None:
             raise RuntimeError("Upstream not connected")
-        with self.state_lock:
-            channel_index = int(self.state.channel)
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "text": text,
             "wantAck": False,
-            "channelIndex": channel_index,
+            "channelIndex": int(self.config["node"].get("channel", 0)),
         }
         if destination_id:
             kwargs["destinationId"] = destination_id
@@ -490,6 +324,247 @@ class UpstreamManager:
         with self.state_lock:
             return self.state.snapshot()
 
+    def _load_backups(self) -> list[dict[str, Any]]:
+        with self.backup_lock:
+            if not BACKUPS_PATH.exists():
+                return []
+            try:
+                data = json.loads(BACKUPS_PATH.read_text(encoding="utf-8"))
+                return data if isinstance(data, list) else []
+            except (OSError, json.JSONDecodeError) as exc:
+                LOGGER.warning("Cannot read channel backups: %s", exc)
+                return []
+
+    def _save_backups(self, items: list[dict[str, Any]]) -> None:
+        with self.backup_lock:
+            atomic_save_json(BACKUPS_PATH, items[-MAX_BACKUPS:])
+
+    @staticmethod
+    def _canonical_url(url: str) -> str:
+        raw = str(url or "").strip()
+        if not raw:
+            raise ValueError("Channel URL is required")
+        fragment = raw.split("#", 1)[1] if "#" in raw else raw.lstrip("#")
+        fragment = fragment.strip()
+        if not fragment:
+            raise ValueError("Channel hash is empty")
+        return f"https://meshtastic.org/e/#{fragment}"
+
+    @classmethod
+    def preview_room(cls, url: str) -> dict[str, Any]:
+        canonical = cls._canonical_url(url)
+        encoded = canonical.split("#", 1)[1]
+        if len(encoded) > 16384:
+            raise ValueError("Channel hash is too large")
+        padded = encoded + ("=" * ((4 - len(encoded) % 4) % 4))
+        try:
+            decoded = base64.b64decode(padded.encode("ascii"), altchars=b"-_", validate=True)
+            channel_set = apponly_pb2.ChannelSet()
+            channel_set.ParseFromString(decoded)
+        except Exception as exc:
+            raise ValueError(f"Invalid Meshtastic channel URL/hash: {exc}") from exc
+        if len(channel_set.settings) == 0:
+            raise ValueError("Channel URL does not contain channel settings")
+
+        channels = []
+        for index, settings in enumerate(channel_set.settings):
+            channels.append(
+                {
+                    "index": index,
+                    "role": "PRIMARY" if index == 0 else "SECONDARY",
+                    "name": settings.name or "(default)",
+                    "has_psk": bool(settings.psk),
+                    "uplink_enabled": bool(settings.uplink_enabled),
+                    "downlink_enabled": bool(settings.downlink_enabled),
+                }
+            )
+        try:
+            lora = MessageToDict(channel_set.lora_config, preserving_proto_field_name=True)
+        except Exception:
+            lora = {}
+        return {
+            "full_url": canonical,
+            "hash": f"#{encoded}",
+            "channel_count": len(channels),
+            "primary_name": channels[0]["name"],
+            "channels": channels,
+            "lora": lora,
+        }
+
+    def _local_node(self):
+        with self.iface_lock:
+            iface = self.iface
+            if iface is None:
+                raise RuntimeError("Upstream not connected")
+            node = getattr(iface, "localNode", None)
+            if node is None:
+                raise RuntimeError("Meshtastic local node is not ready")
+            return node
+
+    def _read_channel_urls(self) -> tuple[str, str]:
+        node = self._local_node()
+        try:
+            primary_url = node.getURL(includeAll=False)
+            complete_url = node.getURL(includeAll=True)
+        except TypeError:
+            # Compatibility fallback for older Meshtastic Python versions.
+            primary_url = node.getURL()
+            complete_url = primary_url
+        return self._canonical_url(primary_url), self._canonical_url(complete_url)
+
+    def refresh_active_room(self) -> dict[str, Any]:
+        canonical, _complete = self._read_channel_urls()
+        checked_at = now_iso()
+        with self.state_lock:
+            self.state.active_room_url = canonical
+            self.state.active_room_checked_at = checked_at
+            self.state.last_error = None
+        return {
+            "ok": True,
+            "active_room": {
+                "full_url": canonical,
+                "hash": f"#{canonical.split('#', 1)[1]}",
+                "checked_at": checked_at,
+                "verified": True,
+            },
+        }
+
+    def get_cached_active_room(self) -> dict[str, Any]:
+        with self.state_lock:
+            url = self.state.active_room_url
+            checked_at = self.state.active_room_checked_at
+        if not url:
+            return {"ok": True, "active_room": None}
+        return {
+            "ok": True,
+            "active_room": {
+                "full_url": url,
+                "hash": f"#{url.split('#', 1)[1]}" if "#" in url else None,
+                "checked_at": checked_at,
+                "verified": True,
+            },
+        }
+
+    def list_backups(self) -> dict[str, Any]:
+        return {"ok": True, "backups": self._load_backups()}
+
+    def _set_room_url(self, url: str) -> None:
+        node = self._local_node()
+        try:
+            node.setURL(url)
+        except SystemExit as exc:
+            raise RuntimeError(str(exc) or "Meshtastic rejected the channel URL") from exc
+        # Give the device time to consume admin writes. The long-lived proxy connection remains open.
+        time.sleep(1.0)
+
+    def apply_room(self, url: str, name: str = "room") -> dict[str, Any]:
+        if not self.room_operation_lock.acquire(blocking=False):
+            return {"ok": False, "error": "Another channel operation is already running"}
+        try:
+            preview = self.preview_room(url)
+            requested_url = preview["full_url"]
+            current_url = None
+            complete_current_url = None
+            active: dict[str, Any] = {}
+            try:
+                current_url, complete_current_url = self._read_channel_urls()
+                active = {"full_url": current_url, "hash": f"#{current_url.split('#', 1)[1]}"}
+            except Exception:
+                active = self.get_cached_active_room().get("active_room") or {}
+                current_url = active.get("full_url")
+                complete_current_url = current_url
+
+            backups = self._load_backups()
+            if current_url and current_url != requested_url:
+                backups.append(
+                    {
+                        "ts": now_iso(),
+                        "name": name,
+                        # includeAll=True allows rollback to restore secondary channels too.
+                        "previous_full_url": complete_current_url or current_url,
+                        "previous_primary_url": current_url,
+                        "previous_hash": active.get("hash"),
+                    }
+                )
+                self._save_backups(backups)
+
+            self._set_room_url(requested_url)
+            try:
+                active_after = self.refresh_active_room().get("active_room")
+            except Exception as exc:
+                LOGGER.info("Channel applied but immediate verification is pending: %s", exc)
+                active_after = {
+                    "full_url": requested_url,
+                    "hash": preview["hash"],
+                    "checked_at": now_iso(),
+                    "verified": False,
+                }
+                with self.state_lock:
+                    self.state.active_room_url = requested_url
+                    self.state.active_room_checked_at = active_after["checked_at"]
+
+            return {
+                "ok": True,
+                "message": "Channel applied to node",
+                "active_room": active_after,
+                "backup_created": bool(current_url and current_url != requested_url),
+                "backups": self._load_backups(),
+                "preview": preview,
+            }
+        finally:
+            self.room_operation_lock.release()
+
+    def rollback_room(self) -> dict[str, Any]:
+        if not self.room_operation_lock.acquire(blocking=False):
+            return {"ok": False, "error": "Another channel operation is already running"}
+        try:
+            backups = self._load_backups()
+            if not backups:
+                return {"ok": False, "error": "No backups available"}
+            last = backups[-1]
+            previous_url = last.get("previous_full_url")
+            if not previous_url:
+                return {"ok": False, "error": "Last backup is invalid"}
+
+            preview = self.preview_room(previous_url)
+            self._set_room_url(preview["full_url"])
+            # Remove the backup only after the set operation succeeds.
+            remaining = backups[:-1]
+            self._save_backups(remaining)
+            try:
+                active_after = self.refresh_active_room().get("active_room")
+            except Exception:
+                active_after = {
+                    "full_url": preview["full_url"],
+                    "hash": preview["hash"],
+                    "checked_at": now_iso(),
+                    "verified": False,
+                }
+                with self.state_lock:
+                    self.state.active_room_url = preview["full_url"]
+                    self.state.active_room_checked_at = active_after["checked_at"]
+            return {
+                "ok": True,
+                "message": "Previous channel restored",
+                "active_room": active_after,
+                "backups": remaining,
+            }
+        finally:
+            self.room_operation_lock.release()
+
+    def snapshot(self, limit: int = 100) -> dict[str, Any]:
+        state = self.get_state()
+        cached = self.get_cached_active_room().get("active_room")
+        return {
+            "ok": True,
+            "state": state,
+            "nodes": state.get("nodes", []),
+            "messages": self.store.list(limit),
+            "active_room": cached,
+            "backups": self._load_backups(),
+            "debug": state,
+        }
+
 
 class ThreadedJSONServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
@@ -501,83 +576,80 @@ class ThreadedJSONServer(socketserver.ThreadingTCPServer):
 
 
 class JSONHandler(socketserver.StreamRequestHandler):
-    def handle(self):
+    def handle(self) -> None:
         while True:
-            raw = self.rfile.readline()
+            raw = self.rfile.readline(1024 * 1024)
             if not raw:
+                return
+            if len(raw) >= 1024 * 1024:
+                self._send({"type": "error", "ok": False, "error": "request too large"})
                 return
             line = raw.decode("utf-8", errors="replace").strip()
             if not line:
                 continue
             try:
                 msg = json.loads(line)
-            except Exception as exc:
-                self._send({"type": "error", "error": f"invalid json: {exc}"})
+            except json.JSONDecodeError as exc:
+                self._send({"type": "error", "ok": False, "error": f"invalid json: {exc}"})
+                continue
+            if not isinstance(msg, dict):
+                self._send({"type": "error", "ok": False, "error": "request must be a JSON object"})
                 continue
             self._dispatch(msg)
 
-    def _dispatch(self, msg: dict[str, Any]):
+    def _dispatch(self, msg: dict[str, Any]) -> None:
         typ = msg.get("type")
-        manager = self.server.manager  # type: ignore[attr-defined]
-        if typ == "ping":
-            self._send({"type": "pong", "ok": True})
-        elif typ == "get_state":
-            self._send({"type": "state", "state": manager.get_state()})
-        elif typ == "get_nodes":
-            self._send({"type": "nodes", "nodes": manager.get_state().get("nodes", [])})
-        elif typ == "get_messages":
-            limit = int(msg.get("limit", 100))
-            self._send({"type": "messages", "messages": manager.store.list(limit=limit)})
-        elif typ == "send_text":
-            text = (msg.get("text") or "").strip()
-            if not text:
-                self._send({"type": "error", "error": "empty text"})
-                return
-            try:
-                manager.send_text(text=text, destination_id=msg.get("dest"))
-                self._send({"type": "ack", "ok": True})
-            except Exception as exc:
-                self._send({"type": "error", "error": str(exc)})
-        elif typ == "get_channels":
-            try:
-                self._send({"type": "channels", **manager.get_channels()})
-            except Exception as exc:
-                self._send({"type": "error", "error": str(exc)})
-        elif typ == "set_tx_channel":
-            try:
-                idx = int(msg.get("channel_index", 0))
-                self._send({"type": "set_tx_channel", **manager.set_tx_channel(idx)})
-            except Exception as exc:
-                self._send({"type": "error", "error": str(exc)})
-        elif typ == "join_channel_url":
-            try:
-                url = (msg.get("url") or "").strip()
-                if not url:
-                    self._send({"type": "error", "error": "missing url"})
-                    return
-                self._send({"type": "join_channel_url", **manager.join_channel_url(url, bool(msg.get("add_only", False)))})
-            except Exception as exc:
-                self._send({"type": "error", "error": str(exc)})
-        elif typ == "delete_channel":
-            try:
-                idx = int(msg.get("channel_index", -1))
-                self._send({"type": "delete_channel", **manager.delete_channel(idx)})
-            except Exception as exc:
-                self._send({"type": "error", "error": str(exc)})
-        elif typ == "debug":
-            self._send({"type": "debug", "state": manager.get_state()})
-        else:
-            self._send({"type": "error", "error": f"unknown command: {typ}"})
-
-    def _send(self, payload: dict[str, Any]):
+        manager: UpstreamManager = self.server.manager  # type: ignore[attr-defined]
         try:
-            self.wfile.write((json.dumps(payload, ensure_ascii=False, default=str) + "\n").encode("utf-8"))
+            if typ == "ping":
+                self._send({"type": "pong", "ok": True})
+            elif typ == "snapshot":
+                self._send(manager.snapshot(limit=msg.get("limit", 100)))
+            elif typ == "get_state":
+                self._send({"type": "state", "ok": True, "state": manager.get_state()})
+            elif typ == "get_nodes":
+                self._send({"type": "nodes", "ok": True, "nodes": manager.get_state().get("nodes", [])})
+            elif typ == "get_messages":
+                self._send({"type": "messages", "ok": True, "messages": manager.store.list(msg.get("limit", 100))})
+            elif typ == "clear_messages":
+                manager.store.clear()
+                self._send({"type": "ack", "ok": True})
+            elif typ == "send_text":
+                text = str(msg.get("text") or "").strip()
+                if not text:
+                    self._send({"type": "error", "ok": False, "error": "empty text"})
+                else:
+                    manager.send_text(text=text, destination_id=msg.get("dest"))
+                    self._send({"type": "ack", "ok": True})
+            elif typ == "debug":
+                self._send({"type": "debug", "ok": True, "state": manager.get_state()})
+            elif typ == "room_preview":
+                self._send({"ok": True, "preview": manager.preview_room(str(msg.get("url") or ""))})
+            elif typ == "room_get_active":
+                self._send(manager.get_cached_active_room())
+            elif typ == "room_refresh":
+                self._send(manager.refresh_active_room())
+            elif typ == "room_apply":
+                self._send(manager.apply_room(url=str(msg.get("url") or ""), name=str(msg.get("name") or "room")))
+            elif typ == "room_rollback":
+                self._send(manager.rollback_room())
+            elif typ == "room_list_backups":
+                self._send(manager.list_backups())
+            else:
+                self._send({"type": "error", "ok": False, "error": f"unknown command: {typ}"})
+        except Exception as exc:
+            LOGGER.exception("Proxy command failed: %s", typ)
+            self._send({"type": "error", "ok": False, "error": str(exc)})
+
+    def _send(self, payload: dict[str, Any]) -> None:
+        try:
+            self.wfile.write((json.dumps(payload, ensure_ascii=False, default=str, separators=(",", ":")) + "\n").encode("utf-8"))
             self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError, OSError):
             return
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Meshtastic local proxy")
     parser.add_argument("--config", required=True, help="Path to app_config.json")
     args = parser.parse_args()
@@ -593,20 +665,29 @@ def main():
     manager = UpstreamManager(config=config, state=state, store=store)
     manager.start()
 
-    host = config["proxy"]["host"]
+    host = str(config["proxy"].get("host", "127.0.0.1"))
     port = int(config["proxy"]["port"])
     server = ThreadedJSONServer((host, port), JSONHandler, manager)
     LOGGER.info("Proxy ready on %s:%s", host, port)
 
-    def _stop(signum, frame):
+    stopping = threading.Event()
+
+    def _stop(signum, frame) -> None:
+        if stopping.is_set():
+            return
+        stopping.set()
         LOGGER.info("Stopping proxy")
         manager.stop()
-        server.shutdown()
-        server.server_close()
+        # shutdown() must be called from a different thread than serve_forever().
+        threading.Thread(target=server.shutdown, daemon=True).start()
 
     signal.signal(signal.SIGINT, _stop)
     signal.signal(signal.SIGTERM, _stop)
-    server.serve_forever()
+    try:
+        server.serve_forever(poll_interval=0.5)
+    finally:
+        manager.stop()
+        server.server_close()
 
 
 if __name__ == "__main__":

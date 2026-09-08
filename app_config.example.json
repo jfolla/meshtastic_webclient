@@ -1,11 +1,10 @@
 {
-  "version": "0.6.9",
+  "version": "0.7.4-beta",
   "node": {
     "mode": "serial",
     "host": "",
     "port": "/dev/ttyUSB0",
-    "channel": 0,
-    "tcp_port": 4403
+    "channel": 0
   },
   "proxy": {
     "host": "127.0.0.1",
@@ -15,5 +14,8 @@
     "listen_host": "0.0.0.0",
     "listen_port": 8088,
     "ssl_adhoc": true
+  },
+  "ui": {
+    "default_language": "en"
   }
 }

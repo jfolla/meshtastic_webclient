@@ -3,108 +3,665 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>Meshtastic Web Chat</title>
   <style>
-    :root { --bg:#0b1220; --panel:#121a2b; --panel-2:#182237; --text:#e7ecf5; --muted:#9fb0ca; --accent:#57b3ff; --accent-2:#7cf29a; --border:#26324c; --danger:#ff8d8d; --shadow:0 10px 30px rgba(0,0,0,.25); }
-    *{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#0a1020,#0d1527 35%,#0c1422);color:var(--text);font-family:Inter,system-ui,sans-serif}
-    header{padding:20px 24px;border-bottom:1px solid var(--border);background:rgba(7,12,22,.6);backdrop-filter:blur(8px);position:sticky;top:0;z-index:10}
-    header h1{margin:0;font-size:1.4rem} header p{margin:6px 0 0;color:var(--muted);font-size:.95rem}
-    .page{padding:18px}.card{background:linear-gradient(180deg,var(--panel),var(--panel-2));border:1px solid var(--border);border-radius:18px;box-shadow:var(--shadow)}
-    .tabs{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:18px}.tabbtn{border:1px solid var(--border);background:rgba(255,255,255,.05);color:var(--text);padding:10px 14px;border-radius:12px;cursor:pointer;font-weight:700}
-    .tabbtn.active{background:var(--accent);color:#031220;border-color:transparent}.tabpanel{display:none}.tabpanel.active{display:block}
-    .section-title{margin:0 0 14px;font-size:1rem;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-    .chat{display:flex;flex-direction:column;min-height:70vh}.messages{flex:1;padding:18px;overflow:auto;max-height:72vh}
-    .bubble{padding:12px 14px;border-radius:14px;margin-bottom:12px;background:rgba(255,255,255,.03);border:1px solid var(--border)}.bubble.out{background:rgba(87,179,255,.12);border-color:rgba(87,179,255,.35)}
-    .meta{font-size:.78rem;color:var(--muted);margin-bottom:6px}.text{white-space:pre-wrap;line-height:1.45}
-    .composer{display:grid;grid-template-columns:280px 1fr auto;gap:10px;padding:16px;border-top:1px solid var(--border)}
-    input[type=text], input[type=file], textarea, select{width:100%;background:rgba(255,255,255,.03);border:1px solid var(--border);color:var(--text);padding:12px 14px;border-radius:12px}
-    button{border:0;border-radius:12px;padding:12px 16px;cursor:pointer;background:var(--accent);color:#031220;font-weight:700} button.secondary{background:rgba(255,255,255,.05);color:var(--text);border:1px solid var(--border)}
-    .panel-pad{padding:18px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.stat{padding:12px;border:1px solid var(--border);border-radius:14px;background:rgba(255,255,255,.03)}
-    .stat .label{color:var(--muted);font-size:.78rem;margin-bottom:4px}.stat .value{font-size:1.05rem;font-weight:700}.bad{color:var(--danger)}
-    ul.nodes,ul.book,ul.channels{list-style:none;padding:0;margin:0;display:grid;gap:8px} ul.nodes li,ul.book li,ul.channels li{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:rgba(255,255,255,.03)}
-    .toolbar{display:flex;flex-wrap:wrap;gap:10px;margin-top:12px}.hint{color:var(--muted);font-size:.9rem}.row{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}.muted{color:var(--muted);font-size:.85rem}.smallbtn{padding:8px 10px;font-size:.85rem}
-    .split{display:grid;grid-template-columns:1.2fr .8fr;gap:18px}.inline-status{font-size:.9rem;color:var(--muted);margin-top:10px}.ok{color:var(--accent-2)}
-    @media (max-width:980px){.composer,.grid,.split{grid-template-columns:1fr}.messages{max-height:50vh}}
+    :root {
+      --bg:#0b1220; --panel:#121a2b; --panel2:#182237; --text:#e7ecf5; --muted:#9fb0ca;
+      --accent:#57b3ff; --accent2:#7cf29a; --border:#26324c; --danger:#ff8d8d; --warn:#ffd166;
+      --shadow:0 10px 30px rgba(0,0,0,.25);
+    }
+    * { box-sizing:border-box; }
+    body { margin:0; background:linear-gradient(180deg,#0a1020,#0d1527 35%,#0c1422); color:var(--text); font-family:Inter,system-ui,-apple-system,"Segoe UI",sans-serif; }
+    header { padding:16px 24px; border-bottom:1px solid var(--border); background:rgba(7,12,22,.84); position:sticky; top:0; z-index:20; backdrop-filter:blur(8px); }
+    .header-row { max-width:1400px; margin:0 auto; display:flex; justify-content:space-between; gap:16px; align-items:center; }
+    header h1 { margin:0; font-size:1.35rem; }
+    header p { margin:5px 0 0; color:var(--muted); font-size:.9rem; }
+    .statusbar { display:flex; flex-wrap:wrap; gap:8px; justify-content:flex-end; }
+    .pill { display:inline-flex; align-items:center; gap:7px; border:1px solid var(--border); background:rgba(255,255,255,.04); padding:7px 10px; border-radius:999px; font-size:.82rem; }
+    .dot { width:8px; height:8px; border-radius:50%; background:var(--danger); }
+    .pill.ok .dot { background:var(--accent2); }
+    .app { max-width:1400px; margin:0 auto; padding:18px; }
+    .tab-radio { position:absolute; opacity:0; pointer-events:none; }
+    .nav { display:flex; flex-wrap:wrap; gap:9px; margin-bottom:18px; position:sticky; top:78px; z-index:15; padding:8px 0; background:linear-gradient(180deg,var(--bg) 70%,rgba(11,18,32,0)); }
+    .tab-label { background:rgba(255,255,255,.04); color:var(--text); border:1px solid var(--border); border-radius:12px; padding:10px 15px; cursor:pointer; font-weight:650; user-select:none; }
+    .tab-label:hover { border-color:var(--accent); }
+    .tab-panel { display:none; }
+    #nav-chat:checked ~ .nav label[for="nav-chat"],
+    #nav-channels:checked ~ .nav label[for="nav-channels"],
+    #nav-addressbook:checked ~ .nav label[for="nav-addressbook"],
+    #nav-nodes:checked ~ .nav label[for="nav-nodes"],
+    #nav-config:checked ~ .nav label[for="nav-config"],
+    #nav-debug:checked ~ .nav label[for="nav-debug"] { background:var(--accent); color:#031220; border-color:transparent; }
+    #nav-chat:checked ~ #tab-chat,
+    #nav-channels:checked ~ #tab-channels,
+    #nav-addressbook:checked ~ #tab-addressbook,
+    #nav-nodes:checked ~ #tab-nodes,
+    #nav-config:checked ~ #tab-config,
+    #nav-debug:checked ~ #tab-debug { display:block; }
+    .layout-chat { display:grid; grid-template-columns:minmax(0,1.7fr) minmax(300px,1fr); gap:18px; }
+    .layout-grid { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+    .card { background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--border); border-radius:18px; box-shadow:var(--shadow); padding:18px; }
+    .title { margin:0 0 14px; font-size:1rem; color:var(--muted); text-transform:uppercase; letter-spacing:.08em; }
+    .hint { color:var(--muted); font-size:.9rem; line-height:1.5; }
+    .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .quick-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
+    .stat { padding:12px; border:1px solid var(--border); border-radius:14px; background:rgba(255,255,255,.03); min-width:0; }
+    .stat .label { color:var(--muted); font-size:.76rem; margin-bottom:4px; }
+    .stat .value { font-size:.98rem; font-weight:700; overflow-wrap:anywhere; }
+    .good { color:var(--accent2); } .bad { color:var(--danger); } .warning { color:var(--warn); }
+    .messages { overflow:auto; height:min(56vh,650px); min-height:360px; padding-right:4px; scroll-behavior:smooth; }
+    .bubble { padding:11px 13px; border-radius:14px; margin-bottom:10px; background:rgba(255,255,255,.03); border:1px solid var(--border); }
+    .bubble.out { background:rgba(87,179,255,.12); border-color:rgba(87,179,255,.35); }
+    .meta { font-size:.76rem; color:var(--muted); margin-bottom:5px; overflow-wrap:anywhere; }
+    .text { white-space:pre-wrap; line-height:1.42; overflow-wrap:anywhere; }
+    .composer { display:grid; grid-template-columns:260px 1fr auto; gap:10px; margin-top:14px; align-items:end; }
+    input[type=text], input[type=file], textarea, select { width:100%; background:rgba(255,255,255,.035); border:1px solid var(--border); color:var(--text); padding:11px 13px; border-radius:12px; outline:none; }
+    input:focus, textarea:focus, select:focus { border-color:var(--accent); box-shadow:0 0 0 2px rgba(87,179,255,.12); }
+    select option { background:var(--panel); }
+    button, .button-label { border:0; border-radius:12px; padding:11px 15px; cursor:pointer; background:var(--accent); color:#031220; font-weight:700; font:inherit; }
+    button:hover, .button-label:hover { filter:brightness(1.06); }
+    button:disabled { opacity:.5; cursor:wait; }
+    button.secondary, .button-label.secondary { background:rgba(255,255,255,.05); color:var(--text); border:1px solid var(--border); }
+    button.warn { background:var(--warn); color:#252000; }
+    button.danger { background:rgba(255,141,141,.12); color:var(--danger); border:1px solid rgba(255,141,141,.3); }
+    ul.list { list-style:none; padding:0; margin:0; display:grid; gap:8px; }
+    ul.list li { padding:10px 12px; border:1px solid var(--border); border-radius:12px; background:rgba(255,255,255,.03); }
+    .row { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:10px; align-items:center; }
+    .actions { display:flex; flex-wrap:wrap; gap:7px; justify-content:flex-end; }
+    .muted { color:var(--muted); font-size:.83rem; overflow-wrap:anywhere; }
+    .toolbar { display:flex; flex-wrap:wrap; gap:9px; margin-top:12px; }
+    .form-grid { display:grid; grid-template-columns:minmax(0,1fr) 230px auto auto; gap:9px; align-items:center; margin-bottom:12px; }
+    .smallbtn { padding:7px 10px; font-size:.82rem; }
+    pre.debug { white-space:pre-wrap; overflow:auto; max-height:65vh; font-size:.8rem; color:#cfe0ff; background:rgba(255,255,255,.03); border:1px solid var(--border); border-radius:12px; padding:12px; }
+    code { color:#d9f1ff; }
+    .preview { display:grid; gap:8px; }
+    .preview-channel { display:flex; justify-content:space-between; gap:12px; padding:8px 10px; border:1px solid var(--border); border-radius:10px; }
+    .toast { position:fixed; right:18px; bottom:18px; max-width:440px; z-index:50; padding:12px 15px; border-radius:12px; border:1px solid var(--border); background:#111b2e; box-shadow:var(--shadow); display:none; }
+    .toast.show { display:block; } .toast.error { border-color:rgba(255,141,141,.55); color:#ffd0d0; }
+    .empty { color:var(--muted); text-align:center; padding:28px 12px; }
+    @media (max-width:1100px) { .layout-chat,.layout-grid { grid-template-columns:1fr; } .composer,.form-grid { grid-template-columns:1fr; } .grid { grid-template-columns:1fr 1fr; } .nav { top:75px; } }
+    @media (max-width:700px) { header { padding:14px; } .header-row { align-items:flex-start; flex-direction:column; } .statusbar { justify-content:flex-start; } .app { padding:12px; } .nav { top:118px; overflow-x:auto; flex-wrap:nowrap; } .tab-label { white-space:nowrap; } .grid,.quick-grid { grid-template-columns:1fr; } .messages { min-height:320px; } .row { grid-template-columns:1fr; } .actions { justify-content:flex-start; } }
   </style>
 </head>
 <body>
-<header>
-  <h1>Meshtastic Web Chat</h1>
-  <p>Single-service proxy-first local web interface for Meshtastic nodes. Version {{ version }}</p>
-</header>
-<div class="page">
-  <div class="tabs">
-    <button class="tabbtn active" data-tab="messagesTab">Messages</button>
-    <button class="tabbtn" data-tab="statisticsTab">Statistics</button>
-    <button class="tabbtn" data-tab="nodesTab">Nodes</button>
-    <button class="tabbtn" data-tab="addressBookTab">Address Book</button>
-    <button class="tabbtn" data-tab="configurationTab">Configuration</button>
-    <button class="tabbtn" data-tab="channelsTab">Channels</button>
-  </div>
-
-  <section class="tabpanel active" id="messagesTab">
-    <section class="card chat">
-      <div class="messages" id="messages"></div>
-      <div class="composer">
-        <div style="display:flex;flex-direction:column;gap:6px;">
-          <div class="muted" style="font-size:.8rem;">Send to</div>
-          <select id="recipientSelect"><option value="">Broadcast (^all)</option></select>
-        </div>
-        <input id="messageInput" type="text" placeholder="Write a message...">
-        <button id="sendBtn">Send</button>
+  <header>
+    <div class="header-row">
+      <div>
+        <h1>Meshtastic Web Chat</h1>
+        <p>Proxy-first client · v{{ version }}</p>
       </div>
-    </section>
-  </section>
-
-  <section class="tabpanel" id="statisticsTab"><div class="card panel-pad"><h2 class="section-title">Status</h2><div class="grid" id="statsGrid"></div><div class="toolbar"><button class="secondary" id="refreshBtn">Refresh</button><button class="secondary" id="clearBtn">Clear cache</button></div></div></section>
-  <section class="tabpanel" id="nodesTab"><div class="card panel-pad"><h2 class="section-title">Nodes</h2><ul class="nodes" id="nodes"></ul></div></section>
-  <section class="tabpanel" id="addressBookTab"><div class="card panel-pad"><h2 class="section-title">Address Book</h2><div class="toolbar"><input id="abNodeId" type="text" placeholder="Node ID, e.g. !9ee86a74"><input id="abAlias" type="text" placeholder="Alias, e.g. OFFICE"><button class="secondary" id="saveAliasBtn">Save alias</button></div><p class="hint">Store a local alias for a mesh node ID. The alias is only used by this web UI and appears in the direct-message recipient list.</p><ul class="book" id="addressBook"></ul></div></section>
-  <section class="tabpanel" id="configurationTab"><div class="card panel-pad"><h2 class="section-title">Configuration</h2><div class="toolbar"><button class="secondary" id="exportCfgBtn">Export config</button><label class="secondary" style="display:inline-flex;align-items:center;gap:8px;padding:12px 16px;cursor:pointer;">Import config<input id="importCfgInput" type="file" accept="application/json" style="display:none;"></label></div><p class="hint">Importing a config replaces <code>app_config.json</code>. Restart the service after import.</p></div></section>
-
-  <section class="tabpanel" id="channelsTab">
-    <div class="split">
-      <div class="card panel-pad">
-        <h2 class="section-title">Channels</h2>
-        <div class="toolbar" style="margin-top:0;"><button class="secondary" id="refreshChannelsBtn">Refresh channels</button></div>
-        <ul class="channels" id="channelsList"></ul>
-        <div id="channelsStatus" class="inline-status"></div>
-      </div>
-      <div class="card panel-pad">
-        <h2 class="section-title">Join from URL</h2>
-        <input id="channelUrlInput" type="text" placeholder="meshtastic://...">
-        <div class="toolbar"><label class="secondary" style="display:inline-flex;align-items:center;gap:8px;cursor:pointer;"><input id="channelAddOnly" type="checkbox" style="width:auto;">Add only</label><button id="joinChannelBtn">Join URL</button></div>
-        <p class="hint">Use a Meshtastic channel URL. The proxy asks the connected node to apply it, then re-reads the channel list for verification.</p>
+      <div class="statusbar">
+        <span class="pill" id="proxyPill"><span class="dot"></span><span>Proxy: unknown</span></span>
+        <span class="pill" id="backendPill"><span class="dot"></span><span>Node: unknown</span></span>
       </div>
     </div>
-  </section>
-</div>
-<script>
-let currentNodes = [];
-async function getJson(url, opts) { const res = await fetch(url, opts); const data = await res.json().catch(() => ({})); if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`); return data; }
-function esc(s) { return String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch])); }
-function updateComposerPlaceholder(){ const sel=document.getElementById('recipientSelect'); const input=document.getElementById('messageInput'); const selected=sel.options[sel.selectedIndex]?.text || ''; input.placeholder=sel.value ? `Write a direct message to ${selected}...` : 'Write a broadcast message...'; }
-function renderRecipientOptions(nodes,addressBook){ const sel=document.getElementById('recipientSelect'); const current=sel.value; const merged=new Map(); for(const n of (nodes||[])){ if(!n.node_id) continue; merged.set(n.node_id,{node_id:n.node_id,alias:n.alias||'',name:n.name||'',display_name:n.display_name||n.alias||n.name||n.node_id}); } for(const e of (addressBook||[])){ if(!e.node_id) continue; const existing=merged.get(e.node_id)||{node_id:e.node_id,name:'',display_name:e.node_id}; existing.alias=e.alias||existing.alias||''; existing.display_name=e.alias||existing.display_name||e.node_id; merged.set(e.node_id,existing);} const opts=['<option value="">Broadcast (^all)</option>']; const sorted=[...merged.values()].sort((a,b)=>(a.display_name||a.node_id).localeCompare(b.display_name||b.node_id)); for(const n of sorted){ const title=n.display_name||n.alias||n.name||n.node_id; const meta=n.node_id && n.node_id!==title ? ` (${n.node_id})` : ''; opts.push(`<option value="${esc(n.node_id)}">${esc(title+meta)}</option>`);} sel.innerHTML=opts.join(''); if([...sel.options].some(o=>o.value===current)) sel.value=current; updateComposerPlaceholder(); }
-function renderMessages(items){ const box=document.getElementById('messages'); box.innerHTML=items.map(m=>{ const fromLabel=m.from_label||m.from_id||''; const toLabel=m.to_label||m.to_id||''; const fromMeta=m.from_id&&m.from_id!==fromLabel?` (${esc(m.from_id)})`:''; const toMeta=m.to_id&&m.to_id!==toLabel?` (${esc(m.to_id)})`:''; return `<div class="bubble ${m.direction==='out'?'out':''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel)}${fromMeta} → ${esc(toLabel)}${toMeta}</div><div class="text">${esc(m.text||'')}</div></div>`; }).join(''); box.scrollTop=box.scrollHeight; }
-function aliasPrompt(nodeId,currentAlias=''){ document.getElementById('abNodeId').value=nodeId||''; document.getElementById('abAlias').value=currentAlias||''; document.querySelector('[data-tab="addressBookTab"]').click(); document.getElementById('abAlias').focus(); }
-function renderNodes(items){ currentNodes=items; const box=document.getElementById('nodes'); if(!items.length){ box.innerHTML='<li>No nodes cached yet.</li>'; return; } box.innerHTML=items.map(n=>{ const title=n.display_name||n.name||n.node_id; const aliasMeta=n.alias?'<div class="muted">Alias active</div>':''; return `<li><div class="row"><div><strong>${esc(title)}</strong><div class="muted">${esc(n.node_id)} · ${esc(n.hw_model||'')}</div>${aliasMeta}</div><button class="secondary smallbtn" onclick="aliasPrompt('${esc(n.node_id)}','${esc(n.alias||'')}')">Alias</button></div></li>`; }).join(''); }
-function renderAddressBook(items){ const box=document.getElementById('addressBook'); if(!items.length){ box.innerHTML='<li>No aliases saved yet.</li>'; return; } box.innerHTML=items.map(e=>`<li><div class="row"><div><strong>${esc(e.alias)}</strong><div class="muted">${esc(e.node_id)}</div></div><div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectRecipient('${esc(e.node_id)}')">Message</button><button class="secondary smallbtn" onclick="deleteAlias('${esc(e.node_id)}')">Delete</button></div></div></li>`).join(''); }
-function renderStats(status,state,messages,addressBookCount){ const stats=[['Version',status.version||'-'],['Proxy',status.proxy_connected?'Connected':'Disconnected'],['Backend',status.backend_connected?'Connected':'Disconnected'],['Messages cached',messages.length],['Messages RX',state.messages_rx??0],['Messages TX',state.messages_tx??0],['Packets RX seen',state.packets_rx_seen??0],['Relay seen (estimate)',state.relay_seen_estimate??0],['Multi-hop seen (estimate)',state.multi_hop_seen_estimate??0],['Known nodes',(state.nodes||[]).length],['Selected TX channel',state.channel??0],['Address book entries',addressBookCount],['Last sync',status.last_sync||'-']]; document.getElementById('statsGrid').innerHTML=stats.map(([k,v])=>`<div class="stat"><div class="label">${esc(k)}</div><div class="value ${String(v).includes('Disconnected')?'bad':''}">${esc(v)}</div></div>`).join(''); }
-function renderChannels(payload){ const box=document.getElementById('channelsList'); const status=document.getElementById('channelsStatus'); const items=payload.channels||[]; if(!items.length){ box.innerHTML = payload.channels_unavailable ? '<li>URL-only mode: this node does not expose a structured channel list.</li>' : '<li>No channel list available from this node yet.</li>'; } else { box.innerHTML=items.map(ch=>{ const tag=ch.selected_tx?'<span class="ok">TX selected</span>':`<span class="muted">${esc(ch.role||'')}</span>`; const deleteBtn=String(ch.role||'').toUpperCase()==='PRIMARY'?'':`<button class="secondary smallbtn" onclick="deleteChannel(${Number(ch.index)})">Delete</button>`; return `<li><div class="row"><div><strong>${esc(ch.name||'(unnamed)')}</strong><div class="muted">Index ${esc(ch.index)} · ${esc(ch.role||'')}</div>${tag}</div><div style="display:flex;gap:8px;"><button class="secondary smallbtn" onclick="selectTxChannel(${Number(ch.index)})">Use for TX</button>${deleteBtn}</div></div></li>`; }).join(''); } status.textContent = payload.ok ? (payload.channels_unavailable ? (payload.message || 'URL-only mode: this node/API combination does not expose a structured channel list.') + (payload.channel_url ? ` Current URL: ${payload.channel_url}` : '') : `Loaded ${items.length} channels. Selected TX index: ${payload.selected_index ?? '-'}`) : (payload.error||'Unable to read channels'); status.className='inline-status '+(payload.ok?'ok':''); }
-async function refreshChannels(){ try{ renderChannels(await getJson('/api/channels')); } catch(err){ renderChannels({ok:false,error:err.message,channels:[]}); } }
-async function selectTxChannel(channelIndex){ try{ const payload=await getJson('/api/channels/select',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({channel_index:channelIndex})}); document.getElementById('channelsStatus').textContent=payload.verified ? `TX channel set to index ${payload.selected_index} (${payload.channel_name||'unnamed'}) and verified.` : `TX channel index saved locally as ${payload.selected_index}. ${payload.warning||''}`; document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
-async function joinChannelUrl(){ const url=document.getElementById('channelUrlInput').value.trim(); const addOnly=document.getElementById('channelAddOnly').checked; if(!url) return alert('Channel URL is required.'); try{ const payload=await getJson('/api/channels/join',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url,add_only:addOnly})}); document.getElementById('channelsStatus').textContent = payload.channels_unavailable ? (payload.channel_url ? `Join applied in URL-only mode. Current URL: ${payload.channel_url}` : (payload.message||'Join applied, but the node did not expose a structured channel list.')) : `Join applied and verified. Channel count: ${payload.count ?? '-'}.`;  document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
-async function deleteChannel(channelIndex){ if(!confirm(`Delete channel index ${channelIndex}?`)) return; try{ const payload=await getJson(`/api/channels/${channelIndex}`,{method:'DELETE'}); document.getElementById('channelsStatus').textContent=`Channel ${payload.deleted_index} deleted and channel list refreshed.`; document.getElementById('channelsStatus').className='inline-status ok'; await refreshAll(); } catch(err){ document.getElementById('channelsStatus').textContent=err.message; document.getElementById('channelsStatus').className='inline-status'; } }
-async function saveAlias(){ const nodeId=document.getElementById('abNodeId').value.trim(); const alias=document.getElementById('abAlias').value.trim(); if(!nodeId||!alias) return alert('Node ID and alias are required.'); const res=await fetch('/api/address-book',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node_id:nodeId,alias})}); const data=await res.json(); if(!data.ok) return alert(data.error||'Failed to save alias.'); document.getElementById('abNodeId').value=''; document.getElementById('abAlias').value=''; await refreshAll(); }
-async function deleteAlias(nodeId){ await fetch(`/api/address-book/${encodeURIComponent(nodeId)}`,{method:'DELETE'}); await refreshAll(); }
-function selectRecipient(nodeId){ const sel=document.getElementById('recipientSelect'); if([...sel.options].some(o=>o.value===nodeId)){ sel.value=nodeId; document.querySelector('[data-tab="messagesTab"]').click(); updateComposerPlaceholder(); document.getElementById('messageInput').focus(); } }
-async function refreshAll(){ const [status,state,nodes,messages,addressBook]=await Promise.all([getJson('/api/status'),getJson('/api/state'),getJson('/api/nodes'),getJson('/api/messages?limit=100'),getJson('/api/address-book')]); renderMessages(messages); renderNodes(nodes); renderAddressBook(addressBook); renderRecipientOptions(nodes,addressBook); renderStats(status,state,messages,addressBook.length); await refreshChannels(); }
-document.querySelectorAll('.tabbtn').forEach(btn=>btn.addEventListener('click',()=>{ document.querySelectorAll('.tabbtn').forEach(b=>b.classList.remove('active')); document.querySelectorAll('.tabpanel').forEach(p=>p.classList.remove('active')); btn.classList.add('active'); document.getElementById(btn.dataset.tab).classList.add('active'); }));
-document.getElementById('sendBtn').addEventListener('click', async()=>{ const input=document.getElementById('messageInput'); const text=input.value.trim(); if(!text) return; const res=await fetch('/api/send',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text,dest:document.getElementById('recipientSelect').value})}); const data=await res.json().catch(()=>({})); if(!res.ok || data.ok===false) return alert(data.error||'Failed to send message.'); input.value=''; await refreshAll(); });
-document.getElementById('messageInput').addEventListener('keydown', async(e)=>{ if(e.key==='Enter'){ e.preventDefault(); document.getElementById('sendBtn').click(); }});
-document.getElementById('recipientSelect').addEventListener('change', updateComposerPlaceholder); document.getElementById('saveAliasBtn').addEventListener('click', saveAlias); document.getElementById('refreshBtn').addEventListener('click', refreshAll); document.getElementById('clearBtn').addEventListener('click', async()=>{ await fetch('/api/clear',{method:'POST'}); await refreshAll(); }); document.getElementById('exportCfgBtn').addEventListener('click', ()=>{ window.location.href='/api/config/export'; });
-document.getElementById('importCfgInput').addEventListener('change', async(e)=>{ const file=e.target.files[0]; if(!file) return; const fd=new FormData(); fd.append('file',file); const res=await fetch('/api/config/import',{method:'POST',body:fd}); const data=await res.json(); alert(data.message||data.error||'Done'); });
-document.getElementById('refreshChannelsBtn').addEventListener('click', refreshChannels); document.getElementById('joinChannelBtn').addEventListener('click', joinChannelUrl);
-refreshAll().catch(console.error); setInterval(()=>refreshAll().catch(console.error),5000);
-</script>
+  </header>
+
+  <main class="app">
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-chat" value="chat" checked>
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-channels" value="channels">
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-addressbook" value="addressbook">
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-nodes" value="nodes">
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-config" value="config">
+    <input class="tab-radio" type="radio" name="main-tab" id="nav-debug" value="debug">
+
+    <nav class="nav" aria-label="Main sections">
+      <label class="tab-label" for="nav-chat">Chat</label>
+      <label class="tab-label" for="nav-channels">Channels</label>
+      <label class="tab-label" for="nav-addressbook">Address Book</label>
+      <label class="tab-label" for="nav-nodes">Nodes</label>
+      <label class="tab-label" for="nav-config">Config</label>
+      <label class="tab-label" for="nav-debug">Debug</label>
+    </nav>
+
+    <section class="tab-panel" id="tab-chat">
+      <div class="layout-chat">
+        <div class="card">
+          <h2 class="title">Messages</h2>
+          <div class="messages" id="messages"><div class="empty">Loading messages…</div></div>
+          <div class="composer">
+            <div>
+              <div class="muted" style="margin-bottom:5px;">Send to</div>
+              <select id="recipientSelect"><option value="">Broadcast (^all)</option></select>
+            </div>
+            <input id="messageInput" type="text" maxlength="1000" autocomplete="off" placeholder="Write a broadcast message...">
+            <button id="sendBtn">Send</button>
+          </div>
+        </div>
+        <aside style="display:grid;gap:18px;align-content:start;">
+          <div class="card">
+            <h2 class="title">Active channel</h2>
+            <div class="stat"><div class="label">Primary channel</div><div class="value" id="activeRoomSummary">Unknown</div></div>
+            <div class="toolbar"><button class="secondary smallbtn" data-tab="channels">Manage channel</button></div>
+          </div>
+          <div class="card">
+            <h2 class="title">Quick stats</h2>
+            <div class="quick-grid" id="summaryGrid"></div>
+          </div>
+          <div class="card">
+            <h2 class="title">Current recipient</h2>
+            <div class="stat"><div class="label">Selected target</div><div class="value" id="recipientSummary">Broadcast (^all)</div></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-channels">
+      <div class="layout-grid">
+        <div class="card">
+          <h2 class="title">Join channel from URL or hash (Beta)</h2>
+          <p class="hint">Paste a Meshtastic channel URL or <code>#...</code> hash. Preview validates and decodes the channel without changing the node. Import saves it locally. Apply changes the real node and creates a channel backup first.</p>
+          <div class="form-grid">
+            <input id="roomValue" type="text" maxlength="16384" autocomplete="off" placeholder="Paste channel URL / hash">
+            <input id="roomName" type="text" maxlength="80" autocomplete="off" placeholder="Local name (optional)">
+            <button class="secondary" id="previewRoomBtn">Preview</button>
+            <button id="importRoomBtn">Import</button>
+          </div>
+          <div class="toolbar">
+            <button class="secondary" id="refreshActiveRoomBtn">Refresh active channel</button>
+            <button class="warn" id="rollbackRoomBtn">Rollback last backup</button>
+          </div>
+          <div id="activeRoomBox" class="stat" style="margin-top:14px;"><div class="label">Active channel on node</div><div class="value">Unknown</div></div>
+        </div>
+        <div class="card">
+          <h2 class="title">Preview</h2>
+          <div id="roomPreview" class="preview"><div class="empty">Paste a channel URL and click Preview.</div></div>
+        </div>
+      </div>
+      <div class="layout-grid" style="margin-top:18px;">
+        <div class="card">
+          <h2 class="title">Saved channels</h2>
+          <ul class="list" id="roomsList"><li>Loading…</li></ul>
+        </div>
+        <div class="card">
+          <h2 class="title">Channel backups</h2>
+          <p class="hint">Backups contain the previous channel URL, including its channel key. They are stored locally and protected with owner-only file permissions after the first write.</p>
+          <ul class="list" id="backupsList"><li>Loading…</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-addressbook">
+      <div class="layout-grid">
+        <div class="card">
+          <h2 class="title">Address Book</h2>
+          <div style="display:grid;gap:9px;">
+            <input id="abNodeId" type="text" maxlength="128" autocomplete="off" placeholder="Node ID, e.g. !9ee86a74">
+            <input id="abAlias" type="text" maxlength="80" autocomplete="off" placeholder="Alias, e.g. OFFICE">
+            <input id="abNotes" type="text" maxlength="500" autocomplete="off" placeholder="Notes (optional)">
+            <div><button class="secondary" id="saveAliasBtn">Save alias</button></div>
+          </div>
+          <p class="hint">Aliases are local only. The real Meshtastic node ID is always kept internally.</p>
+        </div>
+        <div class="card">
+          <h2 class="title">Saved aliases</h2>
+          <ul class="list" id="addressBook"><li>Loading…</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-nodes">
+      <div class="card">
+        <h2 class="title">Known nodes</h2>
+        <ul class="list" id="nodesList"><li>Loading…</li></ul>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-config">
+      <div class="card">
+        <h2 class="title">Webchat configuration</h2>
+        <p class="hint">These controls import/export <code>app_config.json</code> for this web client. They do not restore the complete radio configuration.</p>
+        <div class="toolbar">
+          <button class="secondary" id="exportCfgBtn">Export app config</button>
+          <label class="button-label secondary">
+            Import app config
+            <input id="importCfgInput" type="file" accept="application/json,.json" style="display:none;">
+          </label>
+          <button class="secondary" id="clearBtn">Clear message cache</button>
+          <button class="secondary" id="refreshBtn">Refresh now</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-panel" id="tab-debug">
+      <div class="layout-grid">
+        <div class="card">
+          <h2 class="title">Statistics</h2>
+          <div class="grid" id="statsGrid"></div>
+        </div>
+        <div class="card">
+          <h2 class="title">Debug snapshot</h2>
+          <pre class="debug" id="debugOutput">Loading…</pre>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    'use strict';
+    let currentNodes = [];
+    let currentAddressBook = [];
+    let currentRooms = [];
+    let currentSnapshot = null;
+    let refreshInFlight = null;
+    let lastMessagesSignature = '';
+    let toastTimer = null;
+
+    function esc(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[ch]));
+    }
+
+    function notify(message, isError = false) {
+      const toast = document.getElementById('toast');
+      toast.textContent = message;
+      toast.className = `toast show${isError ? ' error' : ''}`;
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => { toast.className = 'toast'; }, 4500);
+    }
+
+    async function getJson(url, opts = {}) {
+      const res = await fetch(url, { cache:'no-store', ...opts });
+      const contentType = res.headers.get('content-type') || '';
+      let data = null;
+      try { data = contentType.includes('application/json') ? await res.json() : { error: await res.text() }; }
+      catch (_) { data = { error: `HTTP ${res.status}` }; }
+      if (!res.ok) throw new Error(data?.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    function selectTab(name) {
+      const radio = document.getElementById(`nav-${name}`);
+      if (!radio) return;
+      radio.checked = true;
+      try { localStorage.setItem('mw-active-tab', name); } catch (_) {}
+    }
+
+    document.querySelectorAll('.tab-radio').forEach(radio => radio.addEventListener('change', () => {
+      if (radio.checked) {
+        try { localStorage.setItem('mw-active-tab', radio.value); } catch (_) {}
+      }
+    }));
+
+    document.addEventListener('click', event => {
+      const tabButton = event.target.closest('[data-tab]');
+      if (tabButton) selectTab(tabButton.dataset.tab);
+
+      const actionButton = event.target.closest('[data-action]');
+      if (!actionButton) return;
+      const nodeId = actionButton.dataset.nodeId || '';
+      const roomId = actionButton.dataset.roomId || '';
+      const runDynamic = async () => {
+        actionButton.disabled = true;
+        try {
+          if (actionButton.dataset.action === 'message') preselectRecipient(nodeId);
+          if (actionButton.dataset.action === 'alias') aliasPrompt(nodeId);
+          if (actionButton.dataset.action === 'delete-alias') await deleteAlias(nodeId);
+          if (actionButton.dataset.action === 'apply-room') await applyRoom(roomId);
+          if (actionButton.dataset.action === 'delete-room') await deleteRoom(roomId);
+        } catch (error) {
+          console.error(error);
+          notify(error.message || String(error), true);
+        } finally {
+          actionButton.disabled = false;
+        }
+      };
+      runDynamic();
+    });
+
+    function updateStatusPills(status = {}) {
+      const proxy = document.getElementById('proxyPill');
+      const backend = document.getElementById('backendPill');
+      proxy.classList.toggle('ok', Boolean(status.proxy_connected));
+      backend.classList.toggle('ok', Boolean(status.backend_connected));
+      proxy.querySelector('span:last-child').textContent = `Proxy: ${status.proxy_connected ? 'connected' : 'offline'}`;
+      backend.querySelector('span:last-child').textContent = `Node: ${status.backend_connected ? 'connected' : 'offline'}`;
+    }
+
+    function updateRecipientSummary() {
+      const sel = document.getElementById('recipientSelect');
+      document.getElementById('recipientSummary').textContent = sel.options[sel.selectedIndex]?.text || 'Broadcast (^all)';
+    }
+
+    function renderRecipientOptions(nodes, addressBook) {
+      const sel = document.getElementById('recipientSelect');
+      const current = sel.value;
+      const merged = new Map();
+      for (const n of nodes || []) {
+        if (!n.node_id) continue;
+        merged.set(n.node_id, { node_id:n.node_id, alias:n.alias || '', name:n.name || '', display_name:n.display_name || n.alias || n.name || n.node_id });
+      }
+      for (const entry of addressBook || []) {
+        if (!entry.node_id) continue;
+        const existing = merged.get(entry.node_id) || { node_id:entry.node_id, name:'', display_name:entry.node_id };
+        existing.alias = entry.alias || existing.alias || '';
+        existing.display_name = entry.alias || existing.display_name || entry.node_id;
+        merged.set(entry.node_id, existing);
+      }
+      const sorted = [...merged.values()].sort((a,b) => (a.display_name || a.node_id).localeCompare(b.display_name || b.node_id));
+      sel.innerHTML = '<option value="">Broadcast (^all)</option>' + sorted.map(n => {
+        const title = n.display_name || n.node_id;
+        const meta = n.node_id !== title ? ` (${n.node_id})` : '';
+        return `<option value="${esc(n.node_id)}">${esc(title + meta)}</option>`;
+      }).join('');
+      if ([...sel.options].some(option => option.value === current)) sel.value = current;
+      updateComposerPlaceholder();
+      updateRecipientSummary();
+    }
+
+    function updateComposerPlaceholder() {
+      const sel = document.getElementById('recipientSelect');
+      const input = document.getElementById('messageInput');
+      const selected = sel.options[sel.selectedIndex]?.text || '';
+      input.placeholder = sel.value ? `Write a direct message to ${selected}...` : 'Write a broadcast message...';
+    }
+
+    function renderMessages(items) {
+      const signature = JSON.stringify((items || []).map(m => [m.id,m.from_label,m.to_label,m.text]));
+      if (signature === lastMessagesSignature) return;
+      lastMessagesSignature = signature;
+      const box = document.getElementById('messages');
+      const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
+      if (!items?.length) {
+        box.innerHTML = '<div class="empty">No messages cached yet.</div>';
+        return;
+      }
+      box.innerHTML = items.map(m => {
+        const fromLabel = m.from_label || m.from_id || '';
+        const toLabel = m.to_label || m.to_id || '';
+        const fromMeta = m.from_id && m.from_id !== fromLabel ? ` (${m.from_id})` : '';
+        const toMeta = m.to_id && m.to_id !== toLabel ? ` (${m.to_id})` : '';
+        return `<div class="bubble ${m.direction === 'out' ? 'out' : ''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel + fromMeta)} → ${esc(toLabel + toMeta)}</div><div class="text">${esc(m.text || '')}</div></div>`;
+      }).join('');
+      if (nearBottom || !box.dataset.initialized) box.scrollTop = box.scrollHeight;
+      box.dataset.initialized = '1';
+    }
+
+    function findAlias(nodeId) {
+      return currentAddressBook.find(entry => entry.node_id === nodeId) || {};
+    }
+
+    function aliasPrompt(nodeId) {
+      const entry = findAlias(nodeId);
+      document.getElementById('abNodeId').value = nodeId || '';
+      document.getElementById('abAlias').value = entry.alias || '';
+      document.getElementById('abNotes').value = entry.notes || '';
+      selectTab('addressbook');
+      document.getElementById('abAlias').focus();
+    }
+
+    function preselectRecipient(nodeId) {
+      const sel = document.getElementById('recipientSelect');
+      sel.value = nodeId || '';
+      updateComposerPlaceholder();
+      updateRecipientSummary();
+      selectTab('chat');
+      document.getElementById('messageInput').focus();
+    }
+
+    function formatLastHeard(value) {
+      if (!value) return '';
+      const num = Number(value);
+      if (!Number.isFinite(num)) return String(value);
+      try { return new Date(num * 1000).toLocaleString(); } catch (_) { return String(value); }
+    }
+
+    function renderNodes(items) {
+      currentNodes = items || [];
+      const box = document.getElementById('nodesList');
+      if (!currentNodes.length) { box.innerHTML = '<li class="empty">No nodes cached yet.</li>'; return; }
+      box.innerHTML = currentNodes.map(n => {
+        const title = n.display_name || n.name || n.node_id;
+        const heard = formatLastHeard(n.last_heard);
+        return `<li><div class="row"><div><strong>${esc(title)}</strong><div class="muted">${esc(n.node_id)}${n.hw_model ? ` · ${esc(n.hw_model)}` : ''}${heard ? ` · last heard ${esc(heard)}` : ''}</div></div><div class="actions"><button class="secondary smallbtn" data-action="message" data-node-id="${esc(n.node_id)}">Message</button><button class="secondary smallbtn" data-action="alias" data-node-id="${esc(n.node_id)}">Alias</button></div></div></li>`;
+      }).join('');
+    }
+
+    function renderAddressBook(items) {
+      currentAddressBook = items || [];
+      const box = document.getElementById('addressBook');
+      if (!currentAddressBook.length) { box.innerHTML = '<li class="empty">No aliases saved yet.</li>'; return; }
+      box.innerHTML = currentAddressBook.map(entry => `<li><div class="row"><div><strong>${esc(entry.alias)}</strong><div class="muted">${esc(entry.node_id)}${entry.notes ? ` · ${esc(entry.notes)}` : ''}</div></div><div class="actions"><button class="secondary smallbtn" data-action="message" data-node-id="${esc(entry.node_id)}">Message</button><button class="secondary smallbtn" data-action="alias" data-node-id="${esc(entry.node_id)}">Edit</button><button class="danger smallbtn" data-action="delete-alias" data-node-id="${esc(entry.node_id)}">Delete</button></div></div></li>`).join('');
+    }
+
+    function renderRoomPreview(preview) {
+      const box = document.getElementById('roomPreview');
+      if (!preview) { box.innerHTML = '<div class="empty">Paste a channel URL and click Preview.</div>'; return; }
+      const channels = Array.isArray(preview.channels) ? preview.channels : [];
+      box.innerHTML = `
+        <div class="stat"><div class="label">Primary channel</div><div class="value">${esc(preview.primary_name || '(default)')}</div></div>
+        <div class="stat"><div class="label">Channels in URL</div><div class="value">${esc(preview.channel_count ?? channels.length)}</div></div>
+        <div class="muted">${esc(preview.hash || '')}</div>
+        ${channels.map(ch => `<div class="preview-channel"><div><strong>${esc(ch.role)} · ${esc(ch.name)}</strong></div><div class="muted">key ${ch.has_psk ? 'yes' : 'no'} · uplink ${ch.uplink_enabled ? 'on' : 'off'} · downlink ${ch.downlink_enabled ? 'on' : 'off'}</div></div>`).join('')}
+      `;
+    }
+
+    function renderRooms(items) {
+      currentRooms = items || [];
+      const box = document.getElementById('roomsList');
+      if (!currentRooms.length) { box.innerHTML = '<li class="empty">No channels saved yet.</li>'; return; }
+      box.innerHTML = currentRooms.map(room => {
+        const preview = room.preview || {};
+        const description = preview.channel_count ? `${preview.channel_count} channel${preview.channel_count === 1 ? '' : 's'}` : '';
+        return `<li><div class="row"><div><strong>${esc(room.name || room.id)}</strong><div class="muted">${esc(room.hash || '')}${description ? ` · ${esc(description)}` : ''}</div></div><div class="actions"><button class="warn smallbtn" data-action="apply-room" data-room-id="${esc(room.id)}">Apply</button><button class="danger smallbtn" data-action="delete-room" data-room-id="${esc(room.id)}">Delete</button></div></div></li>`;
+      }).join('');
+    }
+
+    function renderBackups(items) {
+      const box = document.getElementById('backupsList');
+      if (!items?.length) { box.innerHTML = '<li class="empty">No channel backups available yet.</li>'; return; }
+      box.innerHTML = [...items].reverse().map((backup,index) => `<li><strong>${index === 0 ? 'Latest · ' : ''}${esc(backup.name || 'channel backup')}</strong><div class="muted">${esc(backup.ts || '')}</div><div class="muted">${esc(backup.previous_hash || backup.previous_full_url || '')}</div></li>`).join('');
+    }
+
+    function renderActiveRoom(active) {
+      const text = active?.hash || (active?.full_url ? active.full_url : 'No channel information available');
+      const verified = active?.verified !== false;
+      document.getElementById('activeRoomSummary').textContent = text;
+      document.getElementById('activeRoomBox').innerHTML = `<div class="label">Active channel on node</div><div class="value">${esc(text)}</div><div class="muted">${verified ? 'Verified' : 'Applied; verification pending'}${active?.checked_at ? ` · ${esc(active.checked_at)}` : ''}</div>`;
+    }
+
+    function renderStats(status, state, messages, addressBookCount, roomsCount) {
+      const fullStats = [
+        ['Version', status.version || '{{ version }}'],
+        ['Proxy', status.proxy_connected ? 'Connected' : 'Disconnected'],
+        ['Backend', status.backend_connected ? 'Connected' : 'Disconnected'],
+        ['Messages cached', messages.length],
+        ['Messages RX', state.messages_rx ?? 0],
+        ['Messages TX', state.messages_tx ?? 0],
+        ['Packets RX seen', state.packets_rx_seen ?? 0],
+        ['Relay seen (estimate)', state.relay_seen_estimate ?? 0],
+        ['Multi-hop seen (estimate)', state.multi_hop_seen_estimate ?? 0],
+        ['Known nodes', (state.nodes || []).length],
+        ['Address book entries', addressBookCount],
+        ['Saved channels', roomsCount],
+        ['Last sync', status.last_sync || '-'],
+      ];
+      const quickStats = [
+        ['Proxy', status.proxy_connected ? 'Connected' : 'Offline'],
+        ['Node', status.backend_connected ? 'Connected' : 'Offline'],
+        ['RX messages', state.messages_rx ?? 0],
+        ['TX messages', state.messages_tx ?? 0],
+        ['Known nodes', (state.nodes || []).length],
+        ['Last sync', status.last_sync || '-'],
+      ];
+      const render = values => values.map(([key,value]) => `<div class="stat"><div class="label">${esc(key)}</div><div class="value ${String(value).includes('Disconnected') || String(value).includes('Offline') ? 'bad' : ''}">${esc(value)}</div></div>`).join('');
+      document.getElementById('statsGrid').innerHTML = render(fullStats);
+      document.getElementById('summaryGrid').innerHTML = render(quickStats);
+    }
+
+    async function withButton(button, work) {
+      const oldDisabled = button.disabled;
+      button.disabled = true;
+      try { return await work(); }
+      finally { button.disabled = oldDisabled; }
+    }
+
+    async function saveAlias() {
+      const nodeId = document.getElementById('abNodeId').value.trim();
+      const alias = document.getElementById('abAlias').value.trim();
+      const notes = document.getElementById('abNotes').value.trim();
+      if (!nodeId || !alias) { notify('Node ID and alias are required.', true); return; }
+      await getJson('/api/address-book', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:nodeId,alias,notes}) });
+      document.getElementById('abAlias').value = '';
+      document.getElementById('abNotes').value = '';
+      notify('Alias saved.');
+      await refreshAll(true);
+    }
+
+    async function deleteAlias(nodeId) {
+      if (!confirm(`Delete alias for ${nodeId}?`)) return;
+      await getJson(`/api/address-book/${encodeURIComponent(nodeId)}`, { method:'DELETE' });
+      notify('Alias deleted.');
+      await refreshAll(true);
+    }
+
+    async function previewRoom() {
+      const value = document.getElementById('roomValue').value.trim();
+      if (!value) { notify('Channel URL or hash is required.', true); return; }
+      const data = await getJson('/api/rooms/preview', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value}) });
+      renderRoomPreview(data.preview);
+      notify('Channel URL validated.');
+      return data;
+    }
+
+    async function importRoom() {
+      const value = document.getElementById('roomValue').value.trim();
+      const name = document.getElementById('roomName').value.trim();
+      if (!value) { notify('Channel URL or hash is required.', true); return; }
+      const data = await getJson('/api/rooms/import', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({value,name}) });
+      renderRoomPreview(data.room?.preview || null);
+      document.getElementById('roomValue').value = '';
+      document.getElementById('roomName').value = '';
+      notify('Channel imported locally. Use Apply when you are ready.');
+      await refreshAll(true);
+    }
+
+    async function deleteRoom(roomId) {
+      if (!confirm('Delete this saved channel?')) return;
+      await getJson(`/api/rooms/${encodeURIComponent(roomId)}`, { method:'DELETE' });
+      notify('Saved channel deleted.');
+      await refreshAll(true);
+    }
+
+    async function applyRoom(roomId) {
+      if (!confirm('Apply this channel to the node? The current primary channel will be backed up first.')) return;
+      const data = await getJson('/api/rooms/apply', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({room_id:roomId}) });
+      renderActiveRoom(data.active_room || null);
+      notify(data.message || 'Channel applied.');
+      await refreshAll(true);
+    }
+
+    async function rollbackRoom() {
+      if (!confirm('Restore the last channel backup?')) return;
+      const data = await getJson('/api/rooms/rollback', { method:'POST' });
+      renderActiveRoom(data.active_room || null);
+      notify(data.message || 'Channel restored.');
+      await refreshAll(true);
+    }
+
+    async function refreshActiveRoom() {
+      const data = await getJson('/api/rooms/active?refresh=1');
+      renderActiveRoom(data.active_room || null);
+      notify('Active channel refreshed from the node.');
+      await refreshAll(true);
+    }
+
+    async function sendMessage() {
+      const input = document.getElementById('messageInput');
+      const text = input.value.trim();
+      if (!text) return;
+      const dest = document.getElementById('recipientSelect').value;
+      const body = { text };
+      if (dest) body.dest = dest;
+      await getJson('/api/send', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body) });
+      input.value = '';
+      await refreshAll(true);
+    }
+
+    async function importConfigFile(file) {
+      const form = new FormData();
+      form.append('file', file);
+      const data = await getJson('/api/config/import', { method:'POST', body:form });
+      notify(data.message || 'Configuration imported.');
+      document.getElementById('importCfgInput').value = '';
+    }
+
+    async function clearMessages() {
+      if (!confirm('Clear the local and proxy message caches?')) return;
+      const data = await getJson('/api/clear', { method:'POST' });
+      lastMessagesSignature = '';
+      notify(data.proxy_error ? `Local cache cleared; proxy warning: ${data.proxy_error}` : 'Message caches cleared.', Boolean(data.proxy_error));
+      await refreshAll(true);
+    }
+
+    function applySnapshot(snapshot) {
+      currentSnapshot = snapshot;
+      const status = snapshot.status || {};
+      const state = snapshot.state || {};
+      const messages = snapshot.messages || [];
+      const nodes = snapshot.nodes || [];
+      const addressBook = snapshot.address_book || [];
+      const rooms = snapshot.rooms || [];
+      const backups = snapshot.backups || [];
+      updateStatusPills(status);
+      renderMessages(messages);
+      renderNodes(nodes);
+      renderAddressBook(addressBook);
+      renderRooms(rooms);
+      renderBackups(backups);
+      renderRecipientOptions(nodes, addressBook);
+      renderStats(status, state, messages, addressBook.length, rooms.length);
+      renderActiveRoom(snapshot.active_room || null);
+      document.getElementById('debugOutput').textContent = JSON.stringify({version:snapshot.version,status,state,active_room:snapshot.active_room,debug:snapshot.debug}, null, 2);
+    }
+
+    async function refreshAll(force = false) {
+      if (refreshInFlight) return refreshInFlight;
+      refreshInFlight = (async () => {
+        try {
+          const snapshot = await getJson('/api/snapshot?limit=100');
+          applySnapshot(snapshot);
+          return snapshot;
+        } catch (error) {
+          updateStatusPills({proxy_connected:false,backend_connected:false});
+          document.getElementById('debugOutput').textContent = `Refresh error: ${error.message}`;
+          if (force) notify(`Refresh failed: ${error.message}`, true);
+          throw error;
+        } finally {
+          refreshInFlight = null;
+        }
+      })();
+      return refreshInFlight;
+    }
+
+    function runSafely(fn) {
+      return async event => {
+        try { await withButton(event.currentTarget, fn); }
+        catch (error) { console.error(error); notify(error.message || String(error), true); }
+      };
+    }
+
+    document.getElementById('sendBtn').addEventListener('click', runSafely(sendMessage));
+    document.getElementById('messageInput').addEventListener('keydown', event => { if (event.key === 'Enter') document.getElementById('sendBtn').click(); });
+    document.getElementById('recipientSelect').addEventListener('change', () => { updateComposerPlaceholder(); updateRecipientSummary(); });
+    document.getElementById('refreshBtn').addEventListener('click', runSafely(() => refreshAll(true)));
+    document.getElementById('clearBtn').addEventListener('click', runSafely(clearMessages));
+    document.getElementById('saveAliasBtn').addEventListener('click', runSafely(saveAlias));
+    document.getElementById('previewRoomBtn').addEventListener('click', runSafely(previewRoom));
+    document.getElementById('importRoomBtn').addEventListener('click', runSafely(importRoom));
+    document.getElementById('refreshActiveRoomBtn').addEventListener('click', runSafely(refreshActiveRoom));
+    document.getElementById('rollbackRoomBtn').addEventListener('click', runSafely(rollbackRoom));
+    document.getElementById('exportCfgBtn').addEventListener('click', () => { window.location = '/api/config/export'; });
+    document.getElementById('importCfgInput').addEventListener('change', event => { if (event.target.files[0]) importConfigFile(event.target.files[0]).catch(error => notify(error.message, true)); });
+
+    let initialTab = 'chat';
+    try { initialTab = localStorage.getItem('mw-active-tab') || 'chat'; } catch (_) {}
+    selectTab(initialTab);
+    refreshAll(true).catch(() => {});
+    setInterval(() => { if (!document.hidden) refreshAll(false).catch(() => {}); }, 5000);
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshAll(true).catch(() => {}); });
+  </script>
 </body>
 </html>

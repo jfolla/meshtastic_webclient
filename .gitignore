@@ -41,6 +41,14 @@ temp/
 *.db-shm
 *.db-wal
 messages.jsonl
+webchat_cache.db
+proxy_messages.db
+
+# Runtime configuration and sensitive channel data
+app_config.json
+address_book.json
+rooms.json
+room_backups.json
 
 # Backups / patches / archives
 *.bak

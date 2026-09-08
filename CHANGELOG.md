@@ -1,12 +1,28 @@
 # Changelog
 
-## v0.7.2
-- refined Channels tab messaging to remove duplicate fallback warnings
-- added explicit **URL-only mode** wording for TCP/node API combinations that do not expose a structured channel list
-- kept `Join from URL` bound to the active backend connection
-- refreshed GitHub-ready README and screenshot packaging
+## v0.7.4-beta
 
-# Changelog
+- Reworked the UI into six real selectable tabs: Chat, Channels, Address Book, Nodes, Config and Debug.
+- Kept tab switching independent from application JavaScript by using CSS/radio navigation.
+- Consolidated browser polling into a single `/api/snapshot` request.
+- Consolidated Flask-to-proxy polling into one local snapshot request.
+- Reworked channel read/apply/rollback to use the already-open Meshtastic Python connection (`localNode.getURL()` / `localNode.setURL()`).
+- Added channel URL/hash Preview before Import or Apply.
+- Added automatic channel backup and Rollback with serialized channel operations.
+- Preserved proxy message IDs to avoid duplicate messages after service restarts.
+- Made JSON writes atomic and sensitive runtime files owner-only.
+- Made upgrade archives configuration-safe: runtime config, address book and saved rooms are no longer shipped as repository defaults.
+- Updated launcher supervision so proxy and web processes are restarted together if either one exits.
+- Added `tools/static_selftest.py`.
+- Replaced deprecated UTC timestamp handling with timezone-aware timestamps.
+- Added the v0.7.4-beta Channels screenshot and refreshed the English README.
+
+## v0.7.2
+
+- Refined Channels tab messaging to remove duplicate fallback warnings.
+- Added explicit URL-only mode wording for TCP/node API combinations that do not expose a structured channel list.
+- Kept Join from URL bound to the active backend connection.
+- Refreshed GitHub-ready README and screenshot packaging.
 
 ## v0.7.1
 
