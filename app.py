@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from contextlib import closing
+from security import loopback_host, public_payload
+
 import argparse
 import hashlib
 import json
@@ -16,7 +19,7 @@ from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.7.4-beta"
+VERSION = "0.7.5-beta"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"
@@ -105,6 +108,7 @@ def validate_config(cfg: Any) -> None:
     if mode == "tcp" and not str(node.get("host", "")).strip():
         raise ValueError("node.host is required in tcp mode")
 
+    loopback_host(cfg["proxy"].get("host", "127.0.0.1"))
     proxy_port = int(cfg["proxy"].get("port", 0))
     web_port = int(cfg["web"].get("listen_port", 0))
     if not (1 <= proxy_port <= 65535 and 1 <= web_port <= 65535):
@@ -120,7 +124,7 @@ def clamp_int(value: Any, default: int, minimum: int, maximum: int) -> int:
 
 
 def init_db() -> None:
-    with store_lock, sqlite3.connect(DB_PATH, timeout=10) as conn:
+    with store_lock, closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute(
@@ -144,6 +148,7 @@ def init_db() -> None:
             "ON messages(proxy_id) WHERE proxy_id IS NOT NULL"
         )
         conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_id_desc ON messages(id DESC)")
+        conn.execute("DELETE FROM messages WHERE id < COALESCE((SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET 9999), 0)")
 
 
 def init_address_book() -> None:
@@ -237,39 +242,35 @@ def normalize_room_input(value: str) -> dict[str, str]:
     return {"id": room_id, "hash": hash_value, "full_url": full_url}
 
 
-def db_add_proxy_message(msg: dict[str, Any]) -> None:
-    proxy_id = msg.get("id") if isinstance(msg.get("id"), int) else None
-    ts = str(msg.get("ts") or now_iso())
-    direction = str(msg.get("direction") or "in")
-    from_id = msg.get("from_id")
-    to_id = msg.get("to_id")
-    text = str(msg.get("text") or "")
-
-    with store_lock, sqlite3.connect(DB_PATH, timeout=10) as conn:
+def db_add_proxy_messages(messages: list[dict[str, Any]]) -> None:
+    rows = []
+    for msg in messages:
+        if not isinstance(msg, dict) or type(msg.get("id")) is not int:
+            continue
+        rows.append((str(msg.get("ts") or now_iso()), str(msg.get("direction") or "in"),
+                     msg.get("from_id"), msg.get("to_id"), str(msg.get("text") or ""), msg["id"]))
+    if not rows:
+        return
+    with store_lock, closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("PRAGMA busy_timeout=5000")
-        if proxy_id is not None:
-            exists = conn.execute("SELECT 1 FROM messages WHERE proxy_id = ? LIMIT 1", (proxy_id,)).fetchone()
-            if exists:
-                return
-            # Upgrade path: avoid re-importing the same legacy row once after moving to proxy IDs.
-            legacy = conn.execute(
-                """
-                SELECT id FROM messages
-                WHERE proxy_id IS NULL AND ts = ? AND direction = ?
-                  AND COALESCE(from_id, '') = COALESCE(?, '')
-                  AND COALESCE(to_id, '') = COALESCE(?, '')
-                  AND text = ?
-                ORDER BY id DESC LIMIT 1
-                """,
-                (ts, direction, from_id, to_id, text),
-            ).fetchone()
-            if legacy:
-                conn.execute("UPDATE messages SET proxy_id = ? WHERE id = ?", (proxy_id, legacy[0]))
-                return
-        conn.execute(
-            "INSERT OR IGNORE INTO messages (ts, direction, from_id, to_id, text, proxy_id) VALUES (?, ?, ?, ?, ?, ?)",
-            (ts, direction, from_id, to_id, text, proxy_id),
-        )
+        # One lookup for the whole batch; duplicate snapshots cause no writes.
+        known = {r[0] for r in conn.execute(
+            "SELECT proxy_id FROM messages WHERE proxy_id IN (%s)" % ','.join('?' for _ in rows),
+            [r[5] for r in rows])}
+        new_rows = [row for row in rows if row[5] not in known]
+        if not new_rows:
+            return
+        if conn.execute("SELECT 1 FROM messages WHERE proxy_id IS NULL LIMIT 1").fetchone():
+            for row in new_rows:
+                conn.execute("""UPDATE messages SET proxy_id = ? WHERE id = (
+                    SELECT id FROM messages WHERE proxy_id IS NULL AND ts = ? AND direction = ?
+                    AND COALESCE(from_id, '') = COALESCE(?, '')
+                    AND COALESCE(to_id, '') = COALESCE(?, '') AND text = ?
+                    ORDER BY id DESC LIMIT 1)""", (row[5], *row[:5]))
+        conn.executemany("INSERT OR IGNORE INTO messages "
+                         "(ts, direction, from_id, to_id, text, proxy_id) VALUES (?, ?, ?, ?, ?, ?)", new_rows)
+        conn.execute("DELETE FROM messages WHERE id < COALESCE("
+                     "(SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET 9999), 0)")
 
 
 def decorate_message(msg: dict[str, Any]) -> dict[str, Any]:
@@ -281,7 +282,7 @@ def decorate_message(msg: dict[str, Any]) -> dict[str, Any]:
 
 def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
     limit = clamp_int(limit, 100, 1, 500)
-    with store_lock, sqlite3.connect(DB_PATH, timeout=10) as conn:
+    with store_lock, closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("PRAGMA busy_timeout=5000")
         rows = conn.execute(
             "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
@@ -295,7 +296,7 @@ def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def db_clear_messages() -> None:
-    with store_lock, sqlite3.connect(DB_PATH, timeout=10) as conn:
+    with store_lock, closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("DELETE FROM messages")
 
 
@@ -304,7 +305,7 @@ def proxy_request(payload: dict[str, Any], timeout: float = 3.0) -> dict[str, An
         host = str(proxy_cache["status"]["proxy_host"])
         port = int(proxy_cache["status"]["proxy_port"])
 
-    connect_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
+    connect_host = loopback_host(host)
     with socket.create_connection((connect_host, port), timeout=timeout) as sock:
         sock.settimeout(timeout)
         sock.sendall((json.dumps(payload, separators=(",", ":")) + "\n").encode("utf-8"))
@@ -322,6 +323,7 @@ def proxy_request(payload: dict[str, Any], timeout: float = 3.0) -> dict[str, An
 
 
 def sync_proxy_loop() -> None:
+    failures = 0
     while not stop_event.is_set():
         try:
             snap = proxy_request({"type": "snapshot", "limit": 100}, timeout=5.0)
@@ -331,9 +333,8 @@ def sync_proxy_loop() -> None:
             active_room = snap.get("active_room")
             backups = snap.get("backups", []) if isinstance(snap.get("backups"), list) else []
 
-            for msg in messages:
-                if isinstance(msg, dict):
-                    db_add_proxy_message(msg)
+            db_add_proxy_messages(messages)
+            failures = 0
 
             nodes: list[dict[str, Any]] = []
             for raw_node in raw_nodes:
@@ -363,8 +364,10 @@ def sync_proxy_loop() -> None:
                 status["backend_connected"] = False
                 status["proxy_error"] = str(exc)
                 status["last_sync"] = now_iso()
-            logger.warning("Proxy poll failed: %s", exc)
-        stop_event.wait(3.0)
+            failures += 1
+            if failures == 1:
+                logger.warning("Proxy poll failed; retrying with backoff: %s", type(exc).__name__)
+        stop_event.wait((2, 5, 10, 20, 30)[min(failures - 1, 4)] if failures else 3.0)
 
 
 def snapshot_payload(message_limit: int = 100) -> dict[str, Any]:
@@ -407,6 +410,8 @@ def reject_cross_origin_mutations():
 
 @app.after_request
 def harden_response(response):
+    if request.path.startswith("/api/") and response.is_json:
+        response.set_data(app.json.dumps(public_payload(response.get_json())))
     if request.path == "/" or request.path.startswith("/api/"):
         response.headers["Cache-Control"] = "no-store, max-age=0"
         response.headers["Pragma"] = "no-cache"
@@ -502,7 +507,9 @@ def api_debug():
 
 @app.route("/api/config/export")
 def api_config_export():
-    return send_file(config_path_runtime, as_attachment=True, download_name="app_config.json")
+    response = jsonify(public_payload(load_config(config_path_runtime)))
+    response.headers["Content-Disposition"] = 'attachment; filename="app_config.json"'
+    return response
 
 
 @app.route("/api/config/import", methods=["POST"])
@@ -624,7 +631,7 @@ def api_rooms_active():
     refresh = str(request.args.get("refresh", "")).lower() in {"1", "true", "yes"}
     if refresh:
         try:
-            resp = proxy_request({"type": "room_refresh"}, timeout=8.0)
+            resp = proxy_request({"type": "room_refresh"}, timeout=20.0)
             if resp.get("ok"):
                 with cache_lock:
                     proxy_cache["active_room"] = resp.get("active_room")
@@ -665,7 +672,7 @@ def api_rooms_apply():
     try:
         resp = proxy_request(
             {"type": "room_apply", "url": room["full_url"], "name": room.get("name", room.get("id", "room"))},
-            timeout=20.0,
+            timeout=45.0,
         )
         if resp.get("ok"):
             with cache_lock:
@@ -679,7 +686,7 @@ def api_rooms_apply():
 @app.route("/api/rooms/rollback", methods=["POST"])
 def api_rooms_rollback():
     try:
-        resp = proxy_request({"type": "room_rollback"}, timeout=20.0)
+        resp = proxy_request({"type": "room_rollback"}, timeout=45.0)
         if resp.get("ok"):
             with cache_lock:
                 proxy_cache["active_room"] = resp.get("active_room")

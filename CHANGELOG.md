@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.7.5-beta
+
+- Sincronizzazione SQLite in batch con deduplicazione e retention di 10.000 messaggi.
+- Apply/Rollback con read-back admin completo e verifica persistente dopo riavvio.
+- Rimozione URL e PSK dalle risposte API, fingerprint nella UI e Apply tramite room_id.
+- Proxy vincolato al loopback.
+- Eliminazione raw_json e backoff 2/5/10/20/30 secondi.
+- 12 test di regressione superati; radio fisica ancora da verificare.
+
 ## v0.7.4-beta
 
 - Reworked the UI into six real selectable tabs: Chat, Channels, Address Book, Nodes, Config and Debug.

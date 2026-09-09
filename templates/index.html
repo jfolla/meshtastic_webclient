@@ -433,7 +433,7 @@
       box.innerHTML = `
         <div class="stat"><div class="label">Primary channel</div><div class="value">${esc(preview.primary_name || '(default)')}</div></div>
         <div class="stat"><div class="label">Channels in URL</div><div class="value">${esc(preview.channel_count ?? channels.length)}</div></div>
-        <div class="muted">${esc(preview.hash || '')}</div>
+        <div class="muted">${esc(preview.fingerprint || '')}</div>
         ${channels.map(ch => `<div class="preview-channel"><div><strong>${esc(ch.role)} · ${esc(ch.name)}</strong></div><div class="muted">key ${ch.has_psk ? 'yes' : 'no'} · uplink ${ch.uplink_enabled ? 'on' : 'off'} · downlink ${ch.downlink_enabled ? 'on' : 'off'}</div></div>`).join('')}
       `;
     }
@@ -445,21 +445,21 @@
       box.innerHTML = currentRooms.map(room => {
         const preview = room.preview || {};
         const description = preview.channel_count ? `${preview.channel_count} channel${preview.channel_count === 1 ? '' : 's'}` : '';
-        return `<li><div class="row"><div><strong>${esc(room.name || room.id)}</strong><div class="muted">${esc(room.hash || '')}${description ? ` · ${esc(description)}` : ''}</div></div><div class="actions"><button class="warn smallbtn" data-action="apply-room" data-room-id="${esc(room.id)}">Apply</button><button class="danger smallbtn" data-action="delete-room" data-room-id="${esc(room.id)}">Delete</button></div></div></li>`;
+        return `<li><div class="row"><div><strong>${esc(room.name || room.id)}</strong><div class="muted">${esc(room.fingerprint || '')}${description ? ` · ${esc(description)}` : ''}</div></div><div class="actions"><button class="warn smallbtn" data-action="apply-room" data-room-id="${esc(room.id)}">Apply</button><button class="danger smallbtn" data-action="delete-room" data-room-id="${esc(room.id)}">Delete</button></div></div></li>`;
       }).join('');
     }
 
     function renderBackups(items) {
       const box = document.getElementById('backupsList');
       if (!items?.length) { box.innerHTML = '<li class="empty">No channel backups available yet.</li>'; return; }
-      box.innerHTML = [...items].reverse().map((backup,index) => `<li><strong>${index === 0 ? 'Latest · ' : ''}${esc(backup.name || 'channel backup')}</strong><div class="muted">${esc(backup.ts || '')}</div><div class="muted">${esc(backup.previous_hash || backup.previous_full_url || '')}</div></li>`).join('');
+      box.innerHTML = [...items].reverse().map((backup,index) => `<li><strong>${index === 0 ? 'Latest · ' : ''}${esc(backup.name || 'channel backup')}</strong><div class="muted">${esc(backup.ts || '')}</div><div class="muted">${esc(backup.fingerprint || '')}</div></li>`).join('');
     }
 
     function renderActiveRoom(active) {
-      const text = active?.hash || (active?.full_url ? active.full_url : 'No channel information available');
-      const verified = active?.verified !== false;
+      const text = active ? `${active.primary_name || '(default)'} · ${active.channel_count || 0} channels · fingerprint ${active.fingerprint || '—'}` : 'No channel information available';
+      const verified = active?.verified === true;
       document.getElementById('activeRoomSummary').textContent = text;
-      document.getElementById('activeRoomBox').innerHTML = `<div class="label">Active channel on node</div><div class="value">${esc(text)}</div><div class="muted">${verified ? 'Verified' : 'Applied; verification pending'}${active?.checked_at ? ` · ${esc(active.checked_at)}` : ''}</div>`;
+      document.getElementById('activeRoomBox').innerHTML = `<div class="label">Active channel on node</div><div class="value">${esc(text)}</div><div class="muted">${verified ? 'Verified' : (active ? 'Applied / verification pending' : 'Not verified')}${active?.checked_at ? ` · ${esc(active.checked_at)}` : ''}</div>`;
     }
 
     function renderStats(status, state, messages, addressBookCount, roomsCount) {
@@ -546,7 +546,7 @@
     }
 
     async function applyRoom(roomId) {
-      if (!confirm('Apply this channel to the node? The current primary channel will be backed up first.')) return;
+      if (!confirm('Apply this channel to the node? The complete current channel configuration will be backed up first.')) return;
       const data = await getJson('/api/rooms/apply', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({room_id:roomId}) });
       renderActiveRoom(data.active_room || null);
       notify(data.message || 'Channel applied.');
