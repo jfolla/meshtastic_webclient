@@ -1,48 +1,55 @@
-# Meshtastic Web Chat — v0.7.5-beta
+# Meshtastic Web Chat
 
-[Scarica lo ZIP v0.7.5-beta pronto per l’aggiornamento](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/main/downloads/meshtastic_webchat_v0.7.5_beta_optimized.zip)
+**Version:** v0.7.5-beta  
+**Status:** Beta  
+**Current branch:** `main`  
+**Application folder:** `meshtastic_webchat`  
+**systemd service:** `meshtastic-webchat.service`
 
-Interfaccia Flask con schede Chat, Channels, Address Book, Nodes, Config e Debug.
-Un proxy locale mantiene la connessione seriale o TCP con il nodo Meshtastic.
+[Download the v0.7.5-beta upgrade ZIP](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/main/downloads/meshtastic_webchat_v0.7.5_beta_optimized.zip)
 
-## Modifiche della v0.7.5-beta
+A Flask interface with Chat, Channels, Address Book, Nodes, Config and Debug tabs.
+A local proxy maintains the serial or TCP connection to the Meshtastic node.
+The interface, application messages and documentation are in English.
 
-1. **SQLite in batch:** una connessione e una transazione per sincronizzazione,
-   `INSERT OR IGNORE`, deduplicazione per ID proxy e migrazione delle righe legacy.
-   Con 100 messaggi già presenti, il polling ogni 3 secondi apre circa 20 connessioni
-   al minuto per sincronizzare, anziché fino a 2.000. Sono escluse da questo conteggio
-   le letture richieste dalla UI. Una cache invariata non riscrive i messaggi.
-   Le connessioni vengono chiuse esplicitamente.
-2. **Apply/Rollback con read-back:** prima di Apply viene letto e salvato un backup
-   completo dalla radio. Dopo la scrittura e un secondo di attesa, vengono richiesti
-   tutti gli 8 slot canale e la configurazione LoRa tramite risposte admin correlate.
-   Solo il confronto completo con il ChannelSet richiesto abilita `Verified`.
-   Timeout o differenze producono `Applied / verification pending`.
-   Il controllo periodico riprova la lettura; il target atteso è conservato anche
-   dopo un riavvio. Il rollback conserva il backup fino a verifica riuscita.
-   Gli slot secondari eccedenti vengono disabilitati: `setURL()` da solo li conserva.
-   Se manca il backup iniziale riletto dalla radio, Apply si ferma prima di scrivere.
-3. **Chiavi solo sul server:** le risposte JSON delle API vengono filtrate,
-   comprese anteprima, importazione, Apply, Rollback, stato, backup e Debug.
-   Il browser riceve nome, numero di canali e fingerprint; Apply usa il `room_id`.
-   Il campo di importazione contiene naturalmente l'URL inserito dall'utente e viene
-   svuotato dopo l'importazione. Le chiavi non vengono restituite dal server.
-4. **Proxy solo loopback:** avvio, socket server, client Flask e importazione config
-   rifiutano indirizzi non loopback. Sono ammessi `127.0.0.1`, `localhost` e `::1`.
-   Il listener web resta configurabile separatamente per l'accesso dalla LAN.
-5. **Disco e log:** entrambi i database mantengono gli ultimi 10.000 messaggi.
-   `raw_json` non viene più scritto; i valori storici sono azzerati all'avvio.
-   La riconnessione usa attese 2 → 5 → 10 → 20 → 30 secondi, con un solo avviso
-   per sequenza di errori. Anche il polling Flask usa backoff quando il proxy manca.
+## Changes in v0.7.5-beta
 
-## Aggiornamento da v0.7.4-beta
+1. **Batch SQLite synchronization:** one connection and transaction per batch,
+   `INSERT OR IGNORE`, proxy ID deduplication and migration of legacy rows.
+   With 100 previously imported messages, polling every three seconds opens about
+   20 synchronization connections per minute instead of up to 2,000. This excludes
+   reads requested by the UI. Unchanged snapshots do not rewrite messages.
+   Connections are explicitly closed.
+2. **Apply/Rollback with device read-back:** Apply first reads and saves a complete
+   channel backup from the radio. After writing and waiting one second, it requests
+   all eight channel slots and the LoRa configuration through correlated admin
+   responses. Only a complete match with the requested ChannelSet produces
+   `Verified`. Timeouts or differences produce `Applied / verification pending`.
+   Periodic polling retries verification, and the expected target survives service
+   restarts. Rollback retains its backup until verification succeeds. Extra secondary
+   slots are disabled because `setURL()` alone leaves them enabled. If the initial
+   device backup cannot be read, Apply stops before writing.
+3. **Server-side channel secrets:** JSON API responses are filtered, including
+   preview, import, Apply, Rollback, state, backups and Debug. The browser receives
+   channel names, counts and fingerprints; Apply uses `room_id`. The import field
+   contains the URL entered by the user and is cleared after import. The server
+   does not return channel URLs or PSKs.
+4. **Loopback-only proxy:** startup, the socket server, the Flask client and config
+   import reject non-loopback proxy addresses. `127.0.0.1`, `localhost` and `::1`
+   are supported. The web listener remains separately configurable for LAN access.
+5. **Bounded storage and quieter logs:** both databases retain the latest 10,000
+   messages. New packets no longer store `raw_json`, and existing values are cleared
+   at startup. Reconnection waits follow 2 → 5 → 10 → 20 → 30 seconds, with one
+   warning per failure sequence. Flask polling also backs off when the proxy is down.
 
-Il pacchetto contiene la cartella `meshtastic_webchat`. Non contiene database,
-configurazione locale, rubrica, stanze o backup: questi file esistenti vengono
-mantenuti. La retention elimina però automaticamente i messaggi oltre gli ultimi
-10.000, in entrambi i database, al primo avvio.
+## Upgrading from v0.7.4-beta
 
-Eseguire sul server, con lo ZIP scaricato nella directory corrente:
+The ZIP contains the `meshtastic_webchat` folder. It does not include runtime
+configuration, databases, address book entries, saved channels or backups, so these
+existing files are preserved. Retention does automatically delete messages older
+than the latest 10,000 in each database on the first startup.
+
+Run these commands on the server, with the downloaded ZIP in the current directory:
 
 ```bash
 sudo systemctl stop meshtastic-webchat
@@ -55,9 +62,9 @@ sudo chown -R meshtastic:meshtastic /home/meshtastic/meshtastic_webchat
 sudo chmod +x /home/meshtastic/meshtastic_webchat/start_webchat.sh
 ```
 
-Controllare che `proxy.host` in `app_config.json` sia `127.0.0.1` (oppure un altro
-loopback ammesso). Una vecchia configurazione con `0.0.0.0` viene rifiutata
-esplicitamente; non viene corretta silenziosamente.
+Check that `proxy.host` in `app_config.json` is `127.0.0.1` or another supported
+loopback address. An old configuration using `0.0.0.0` is explicitly rejected;
+it is not silently rewritten.
 
 ```bash
 cd /home/meshtastic/meshtastic_webchat
@@ -67,10 +74,10 @@ sudo systemctl start meshtastic-webchat
 journalctl -u meshtastic-webchat -n 50 --no-pager
 ```
 
-Ricaricare la pagina con Ctrl+F5. La UI deve indicare `0.7.5-beta`.
-Il backup di aggiornamento contiene anche i segreti dei canali.
+Reload the browser with Ctrl+F5. The UI should display `0.7.5-beta`.
+The upgrade backup also contains channel secrets.
 
-## Prima installazione
+## First installation
 
 ```bash
 cd /home/meshtastic/meshtastic_webchat
@@ -81,8 +88,8 @@ chmod 600 app_config.json
 chmod +x start_webchat.sh
 ```
 
-Configurare `node.mode` (`serial` o `tcp`), `node.port` o `node.host` e la porta web.
-Poi installare il servizio:
+Set `node.mode` to `serial` or `tcp`, configure `node.port` or `node.host`, and
+choose the web listening port. Then install the service:
 
 ```bash
 sudo cp meshtastic-webchat.service /etc/systemd/system/
@@ -90,35 +97,35 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now meshtastic-webchat
 ```
 
-## Verifiche e limiti
+## Validation and limitations
 
-Validato con Python e Meshtastic **2.7.11**: 12 test di regressione con protobuf
-reali, SQLite temporaneo, client Flask e radio simulata; controlli statici Python,
-JavaScript e shell. Sono coperti duplicati, migrazione legacy, retention, assenza
-PSK nelle API, Apply tramite ID, read-back discordante/incompleto, pulizia secondari,
-rollback, riavvio durante verifica pendente e backoff.
+Validated with Meshtastic **2.7.11**: 12 regression tests using real protobuf
+messages, temporary SQLite databases, the Flask test client and a simulated radio,
+plus Python, JavaScript and shell syntax checks. Coverage includes deduplication,
+legacy migration, retention, PSK filtering, Apply by ID, mismatched or missing
+read-back responses, secondary channel cleanup, rollback, restart during pending
+verification and reconnection backoff.
 
-Non è stato eseguito un test su una radio fisica. Una risposta admin assente o
-incompatibile non produce `Verified`. La verifica attesta la configurazione riletta
-dal dispositivo, non la persistenza dopo un'interruzione improvvisa di alimentazione.
-Il timeout complessivo del read-back è 12 secondi; la richiesta web Apply/Rollback
-ha timeout 45 secondi. La libreria Meshtastic può normalizzare alcune impostazioni:
-una differenza mantiene la verifica pendente.
+No physical radio test has been performed. Missing or incompatible admin responses
+do not produce `Verified`. Verification confirms configuration read from the device,
+not persistence after a sudden power loss. Read-back has a total 12-second timeout;
+the web Apply/Rollback request has a 45-second timeout. If the firmware normalizes
+settings and the comparison differs, verification remains pending.
 
-La cancellazione SQLite rende le pagine riutilizzabili ma non riduce necessariamente
-subito la dimensione fisica del file. Non viene eseguito `VACUUM` a ogni avvio.
+SQLite deletion makes pages reusable but does not necessarily shrink the physical
+database file immediately. `VACUUM` is not run on every startup.
 
-La web UI non ha autenticazione: gli utenti che la raggiungono possono ancora
-inviare messaggi e applicare stanze salvate. Nascondere le PSK non cambia questi permessi.
-La scheda Config gestisce solo `app_config.json`, non un backup completo del firmware.
+The web UI has no authentication: users who can reach it can still send messages
+and apply saved channels. Hiding PSKs does not change these permissions.
+The Config tab manages only `app_config.json`, not a complete radio backup.
 
-## File runtime
+## Runtime files
 
-- `app_config.json`: collegamento al nodo e listener.
-- `rooms.json`, `room_backups.json`: URL e segreti canale, solo lato server.
-- `channel_verification.json`: target atteso, anche questo contiene materiale chiave.
-- `address_book.json`: alias e note.
-- `proxy_messages.db`, `webchat_cache.db`: ultimi 10.000 messaggi ciascuno.
+- `app_config.json`: node connection and listener configuration.
+- `rooms.json`, `room_backups.json`: channel URLs and secrets stored on the server.
+- `channel_verification.json`: expected target, also containing channel key material.
+- `address_book.json`: aliases and notes.
+- `proxy_messages.db`, `webchat_cache.db`: the latest 10,000 messages in each database.
 
-Le scritture JSON sono atomiche con permessi 0600. I file runtime non fanno parte
-dello ZIP. La v0.7.5-beta è la versione corrente pubblicata su `main`.
+JSON writes are atomic with mode 0600. Runtime files are excluded from the ZIP.
+v0.7.5-beta is the current version published on `main`.

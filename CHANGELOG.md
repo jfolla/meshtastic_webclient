@@ -2,12 +2,13 @@
 
 ## v0.7.5-beta
 
-- Sincronizzazione SQLite in batch con deduplicazione e retention di 10.000 messaggi.
-- Apply/Rollback con read-back admin completo e verifica persistente dopo riavvio.
-- Rimozione URL e PSK dalle risposte API, fingerprint nella UI e Apply tramite room_id.
-- Proxy vincolato al loopback.
-- Eliminazione raw_json e backoff 2/5/10/20/30 secondi.
-- 12 test di regressione superati; radio fisica ancora da verificare.
+- Batch SQLite synchronization with deduplication and retention of 10,000 messages.
+- Apply/Rollback with complete admin read-back and verification that survives restarts.
+- Channel URLs and PSKs removed from API responses; fingerprints in the UI and Apply by room_id.
+- Loopback-only proxy.
+- Removed raw_json storage and added 2/5/10/20/30-second reconnection backoff.
+- Passed 12 regression tests; physical radio validation remains pending.
+- Standardized the interface, messages and documentation in English, including the downloadable ZIP.
 
 ## v0.7.4-beta
 
@@ -49,3 +50,4 @@
 ## v0.6.9
 
 - Added tabbed UI layout and initial Channels tab integration.
+

@@ -369,9 +369,10 @@
         return;
       }
       box.innerHTML = items.map(m => {
-        const fromLabel = m.from_label || m.from_id || '';
+        const isSelf = m.direction === 'out' && ['io', 'me'].includes(m.from_id);
+        const fromLabel = isSelf ? 'Me' : (m.from_label || m.from_id || '');
         const toLabel = m.to_label || m.to_id || '';
-        const fromMeta = m.from_id && m.from_id !== fromLabel ? ` (${m.from_id})` : '';
+        const fromMeta = !isSelf && m.from_id && m.from_id !== fromLabel ? ` (${m.from_id})` : '';
         const toMeta = m.to_id && m.to_id !== toLabel ? ` (${m.to_id})` : '';
         return `<div class="bubble ${m.direction === 'out' ? 'out' : ''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel + fromMeta)} → ${esc(toLabel + toMeta)}</div><div class="text">${esc(m.text || '')}</div></div>`;
       }).join('');
