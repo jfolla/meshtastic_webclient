@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from contextlib import closing
+from security import loopback_host
+
 import argparse
 import base64
 import json
 import logging
 import os
 import signal
+import socket
 import socketserver
 import sqlite3
 import threading
@@ -21,13 +25,14 @@ from pubsub import pub
 
 import meshtastic.serial_interface
 import meshtastic.tcp_interface
-from meshtastic.protobuf import apponly_pb2
+from meshtastic.protobuf import apponly_pb2, admin_pb2, channel_pb2
 
 LOGGER = logging.getLogger("meshtastic_proxy")
 BASE_DIR = Path(__file__).resolve().parent.parent
 DB_PATH = BASE_DIR / "proxy_messages.db"
 BACKUPS_PATH = BASE_DIR / "room_backups.json"
 MAX_BACKUPS = 20
+VERIFICATION_PATH = BASE_DIR / "channel_verification.json"
 
 
 def now_iso() -> str:
@@ -36,7 +41,9 @@ def now_iso() -> str:
 
 def load_config(path: str) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as handle:
-        return json.load(handle)
+        config = json.load(handle)
+    loopback_host(config.get("proxy", {}).get("host", "127.0.0.1"))
+    return config
 
 
 def atomic_save_json(path: Path, payload: Any, mode: int = 0o600) -> None:
@@ -62,7 +69,7 @@ class MessageStore:
         return conn
 
     def _init_db(self) -> None:
-        with self.lock, self._connect() as conn:
+        with self.lock, closing(self._connect()) as conn, conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS messages (
@@ -78,13 +85,21 @@ class MessageStore:
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_proxy_messages_id_desc ON messages(id DESC)")
 
+            conn.execute("UPDATE messages SET raw_json = NULL WHERE raw_json IS NOT NULL")
+            self._prune(conn)
+
+    @staticmethod
+    def _prune(conn):
+        conn.execute("DELETE FROM messages WHERE id < COALESCE("
+                     "(SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET 9999), 0)")
+
     def add(self, direction: str, from_id: str, to_id: str, text: str, raw_packet: Optional[dict[str, Any]] = None) -> int:
-        raw_json = json.dumps(raw_packet, ensure_ascii=False, default=str) if raw_packet is not None else None
-        with self.lock, self._connect() as conn:
+        with self.lock, closing(self._connect()) as conn, conn:
             cur = conn.execute(
-                "INSERT INTO messages (ts, direction, from_id, to_id, text, raw_json) VALUES (?, ?, ?, ?, ?, ?)",
-                (now_iso(), direction, from_id, to_id, text, raw_json),
+                "INSERT INTO messages (ts, direction, from_id, to_id, text) VALUES (?, ?, ?, ?, ?)",
+                (now_iso(), direction, from_id, to_id, text),
             )
+            self._prune(conn)
             return int(cur.lastrowid)
 
     def list(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -93,7 +108,7 @@ class MessageStore:
         except (TypeError, ValueError):
             limit = 100
         limit = max(1, min(limit, 500))
-        with self.lock, self._connect() as conn:
+        with self.lock, closing(self._connect()) as conn, conn:
             rows = conn.execute(
                 "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
                 (limit,),
@@ -105,7 +120,7 @@ class MessageStore:
         ]
 
     def clear(self) -> None:
-        with self.lock, self._connect() as conn:
+        with self.lock, closing(self._connect()) as conn, conn:
             conn.execute("DELETE FROM messages")
 
 
@@ -127,6 +142,7 @@ class ProxyState:
     nodes: list[dict[str, Any]] = field(default_factory=list)
     active_room_url: Optional[str] = None
     active_room_checked_at: Optional[str] = None
+    active_room_verified: bool = False
 
     def snapshot(self) -> dict[str, Any]:
         return asdict(self)
@@ -141,7 +157,14 @@ class UpstreamManager:
         self.iface_lock = threading.RLock()
         self.state_lock = threading.RLock()
         self.backup_lock = threading.RLock()
-        self.room_operation_lock = threading.Lock()
+        self.room_operation_lock = threading.RLock()
+        self.expected_room_url = None
+        if VERIFICATION_PATH.exists():
+            saved = json.loads(VERIFICATION_PATH.read_text(encoding="utf-8"))
+            self.expected_room_url = saved.get("expected_url")
+            if self.expected_room_url:
+                self.preview_room(self.expected_room_url)
+        self.pending_rollback_url = None
         self.stop_event = threading.Event()
         self.poll_thread = threading.Thread(target=self._poll_loop, daemon=True, name="proxy-poller")
         self.worker_thread = threading.Thread(target=self._worker, daemon=True, name="proxy-worker")
@@ -212,6 +235,7 @@ class UpstreamManager:
         with self.state_lock:
             self.state.upstream_connected = False
             self.state.last_disconnect_at = now_iso()
+            self.state.active_room_verified = False
         LOGGER.warning("Meshtastic connection lost")
         with self.iface_lock:
             iface = self.iface
@@ -237,7 +261,7 @@ class UpstreamManager:
         node_cfg = self.config["node"]
         mode = str(node_cfg["mode"]).lower()
         target = node_cfg["port"] if mode == "serial" else node_cfg["host"]
-        LOGGER.info("Opening Meshtastic %s connection to %s", mode, target)
+        LOGGER.debug("Opening Meshtastic %s connection to %s", mode, target)
         if mode == "serial":
             iface = meshtastic.serial_interface.SerialInterface(devPath=target)
         elif mode == "tcp":
@@ -253,18 +277,23 @@ class UpstreamManager:
         return iface
 
     def _worker(self) -> None:
+        failures = 0
         while not self.stop_event.is_set():
             with self.iface_lock:
                 iface = self.iface
             if iface is None:
                 try:
                     self._connect()
+                    failures = 0
                 except Exception as exc:
+                    delay = (2, 5, 10, 20, 30)[min(failures, 4)]
+                    failures += 1
                     with self.state_lock:
                         self.state.upstream_connected = False
-                        self.state.last_error = str(exc)
-                    LOGGER.warning("Upstream connect failed: %s", exc)
-                    self.stop_event.wait(5.0)
+                        self.state.last_error = type(exc).__name__
+                    if failures == 1:
+                        LOGGER.warning("Upstream unavailable; reconnect backoff 2/5/10/20/30 seconds (%s)", type(exc).__name__)
+                    self.stop_event.wait(delay)
                     continue
             self.stop_event.wait(1.0)
 
@@ -362,9 +391,9 @@ class UpstreamManager:
             channel_set = apponly_pb2.ChannelSet()
             channel_set.ParseFromString(decoded)
         except Exception as exc:
-            raise ValueError(f"Invalid Meshtastic channel URL/hash: {exc}") from exc
-        if len(channel_set.settings) == 0:
-            raise ValueError("Channel URL does not contain channel settings")
+            raise ValueError("Invalid Meshtastic channel URL/hash") from exc
+        if not 1 <= len(channel_set.settings) <= 8:
+            raise ValueError("Channel URL must contain 1 to 8 channels")
 
         channels = []
         for index, settings in enumerate(channel_set.settings):
@@ -401,116 +430,168 @@ class UpstreamManager:
                 raise RuntimeError("Meshtastic local node is not ready")
             return node
 
+    @staticmethod
+    def _decode_url(url):
+        encoded = url.split("#", 1)[1]
+        result = apponly_pb2.ChannelSet()
+        result.ParseFromString(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        return result
+
+    @staticmethod
+    def _encode_set(channel_set):
+        return "https://meshtastic.org/e/#" + base64.urlsafe_b64encode(
+            channel_set.SerializeToString(deterministic=True)).decode().rstrip("=")
+
     def _read_channel_urls(self) -> tuple[str, str]:
+        """Read correlated admin responses, never trust the mutable Node cache."""
         node = self._local_node()
-        try:
-            primary_url = node.getURL(includeAll=False)
-            complete_url = node.getURL(includeAll=True)
-        except TypeError:
-            # Compatibility fallback for older Meshtastic Python versions.
-            primary_url = node.getURL()
-            complete_url = primary_url
-        return self._canonical_url(primary_url), self._canonical_url(complete_url)
+        deadline = time.monotonic() + 12.0
+
+        def request_admin(message, field, index=None):
+            ready = threading.Event()
+            result = []
+
+            def received(packet):
+                try:
+                    if int(packet.get("from", -1)) != int(node.nodeNum):
+                        return
+                    raw = packet.get("decoded", {}).get("admin", {}).get("raw")
+                    if raw is None or not raw.HasField(field):
+                        return
+                    value = getattr(raw, field)
+                    if index is not None and value.index != index:
+                        return
+                    copy = type(value)()
+                    copy.CopyFrom(value)
+                    result.append(copy)
+                    ready.set()
+                except (ValueError, TypeError, AttributeError):
+                    return
+
+            node._sendAdmin(message, wantResponse=True, onResponse=received)
+            if not ready.wait(max(0, deadline - time.monotonic())) or not result:
+                raise TimeoutError("Device read-back incomplete")
+            if self._local_node() is not node:
+                raise RuntimeError("Device disconnected during read-back")
+            return result[0]
+
+        channels = []
+        for index in range(8):
+            message = admin_pb2.AdminMessage()
+            message.get_channel_request = index + 1
+            channels.append(request_admin(message, "get_channel_response", index))
+        message = admin_pb2.AdminMessage()
+        message.get_config_request = admin_pb2.AdminMessage.LORA_CONFIG
+        config = request_admin(message, "get_config_response")
+        if not config.HasField("lora"):
+            raise RuntimeError("Missing LoRa read-back")
+        full = apponly_pb2.ChannelSet()
+        primary = apponly_pb2.ChannelSet()
+        for channel in channels:
+            if channel.role in (channel_pb2.Channel.PRIMARY, channel_pb2.Channel.SECONDARY):
+                full.settings.append(channel.settings)
+            if channel.role == channel_pb2.Channel.PRIMARY:
+                primary.settings.append(channel.settings)
+        if len(primary.settings) != 1:
+            raise RuntimeError("Device has no unique primary channel")
+        full.lora_config.CopyFrom(config.lora)
+        primary.lora_config.CopyFrom(config.lora)
+        # Only publish a complete device read; callbacks never mutate cached settings.
+        node.channels = channels
+        node.localConfig.lora.CopyFrom(config.lora)
+        return self._encode_set(primary), self._encode_set(full)
 
     def refresh_active_room(self) -> dict[str, Any]:
-        canonical, _complete = self._read_channel_urls()
-        checked_at = now_iso()
-        with self.state_lock:
-            self.state.active_room_url = canonical
-            self.state.active_room_checked_at = checked_at
-            self.state.last_error = None
-        return {
-            "ok": True,
-            "active_room": {
-                "full_url": canonical,
-                "hash": f"#{canonical.split('#', 1)[1]}",
-                "checked_at": checked_at,
-                "verified": True,
-            },
-        }
+        if not self.room_operation_lock.acquire(blocking=False):
+            return self.get_cached_active_room()
+        try:
+            try:
+                _primary, complete = self._read_channel_urls()
+            except Exception:
+                with self.state_lock:
+                    self.state.active_room_verified = False
+                raise
+            verified = (self.expected_room_url is None or
+                        self._decode_url(complete) == self._decode_url(self.expected_room_url))
+            with self.state_lock:
+                self.state.active_room_url = complete
+                self.state.active_room_checked_at = now_iso()
+                self.state.active_room_verified = verified
+            if verified and self.pending_rollback_url:
+                backups = self._load_backups()
+                if backups and backups[-1].get("previous_full_url") == self.pending_rollback_url:
+                    self._save_backups(backups[:-1])
+                self.pending_rollback_url = None
+            return self.get_cached_active_room()
+        finally:
+            self.room_operation_lock.release()
 
     def get_cached_active_room(self) -> dict[str, Any]:
         with self.state_lock:
             url = self.state.active_room_url
             checked_at = self.state.active_room_checked_at
+            verified = self.state.active_room_verified and self.state.upstream_connected
         if not url:
             return {"ok": True, "active_room": None}
-        return {
-            "ok": True,
-            "active_room": {
-                "full_url": url,
-                "hash": f"#{url.split('#', 1)[1]}" if "#" in url else None,
-                "checked_at": checked_at,
-                "verified": True,
-            },
-        }
+        active = self.preview_room(url)
+        active.update(checked_at=checked_at, verified=verified,
+                      status="verified" if verified else "verification_pending")
+        return {"ok": True, "active_room": active}
 
     def list_backups(self) -> dict[str, Any]:
         return {"ok": True, "backups": self._load_backups()}
 
     def _set_room_url(self, url: str) -> None:
         node = self._local_node()
+        count = len(self._decode_url(url).settings)
+        if not 1 <= count <= 8:
+            raise ValueError("Channel count must be between 1 and 8")
+        with self.state_lock:
+            self.state.active_room_verified = False
+        atomic_save_json(VERIFICATION_PATH, {"expected_url": url})
+        self.expected_room_url = url
         try:
             node.setURL(url)
+            # setURL overwrites the supplied slots but leaves extra channels enabled.
+            for index in range(count, 8):
+                channel = channel_pb2.Channel(index=index, role=channel_pb2.Channel.DISABLED)
+                node.channels[index] = channel
+                node.writeChannel(index)
         except SystemExit as exc:
-            raise RuntimeError(str(exc) or "Meshtastic rejected the channel URL") from exc
-        # Give the device time to consume admin writes. The long-lived proxy connection remains open.
-        time.sleep(1.0)
+            raise RuntimeError("Meshtastic rejected the channel URL") from exc
+        self.stop_event.wait(1.0)
+
+    def _verify_after_apply(self, requested_url):
+        try:
+            return self.refresh_active_room()["active_room"]
+        except Exception as exc:
+            LOGGER.info("Applied; device verification pending (%s)", type(exc).__name__)
+            with self.state_lock:
+                self.state.active_room_url = requested_url
+                self.state.active_room_checked_at = None
+                self.state.active_room_verified = False
+            return self.get_cached_active_room()["active_room"]
 
     def apply_room(self, url: str, name: str = "room") -> dict[str, Any]:
         if not self.room_operation_lock.acquire(blocking=False):
             return {"ok": False, "error": "Another channel operation is already running"}
         try:
             preview = self.preview_room(url)
-            requested_url = preview["full_url"]
-            current_url = None
-            complete_current_url = None
-            active: dict[str, Any] = {}
-            try:
-                current_url, complete_current_url = self._read_channel_urls()
-                active = {"full_url": current_url, "hash": f"#{current_url.split('#', 1)[1]}"}
-            except Exception:
-                active = self.get_cached_active_room().get("active_room") or {}
-                current_url = active.get("full_url")
-                complete_current_url = current_url
-
+            requested = preview["full_url"]
+            # A complete fresh backup is required before the first write.
+            primary, complete = self._read_channel_urls()
             backups = self._load_backups()
-            if current_url and current_url != requested_url:
-                backups.append(
-                    {
-                        "ts": now_iso(),
-                        "name": name,
-                        # includeAll=True allows rollback to restore secondary channels too.
-                        "previous_full_url": complete_current_url or current_url,
-                        "previous_primary_url": current_url,
-                        "previous_hash": active.get("hash"),
-                    }
-                )
+            changed = self._decode_url(complete) != self._decode_url(requested)
+            if changed:
+                backups.append({"ts": now_iso(), "name": name, "previous_full_url": complete,
+                                "previous_primary_url": primary})
                 self._save_backups(backups)
-
-            self._set_room_url(requested_url)
-            try:
-                active_after = self.refresh_active_room().get("active_room")
-            except Exception as exc:
-                LOGGER.info("Channel applied but immediate verification is pending: %s", exc)
-                active_after = {
-                    "full_url": requested_url,
-                    "hash": preview["hash"],
-                    "checked_at": now_iso(),
-                    "verified": False,
-                }
-                with self.state_lock:
-                    self.state.active_room_url = requested_url
-                    self.state.active_room_checked_at = active_after["checked_at"]
-
-            return {
-                "ok": True,
-                "message": "Channel applied to node",
-                "active_room": active_after,
-                "backup_created": bool(current_url and current_url != requested_url),
-                "backups": self._load_backups(),
-                "preview": preview,
-            }
+            self.pending_rollback_url = None
+            self._set_room_url(requested)
+            active = self._verify_after_apply(requested)
+            return {"ok": True, "message": "Verified" if active["verified"] else "Applied / verification pending",
+                    "active_room": active, "backup_created": changed,
+                    "backups": self._load_backups(), "preview": preview}
         finally:
             self.room_operation_lock.release()
 
@@ -521,34 +602,13 @@ class UpstreamManager:
             backups = self._load_backups()
             if not backups:
                 return {"ok": False, "error": "No backups available"}
-            last = backups[-1]
-            previous_url = last.get("previous_full_url")
-            if not previous_url:
-                return {"ok": False, "error": "Last backup is invalid"}
-
-            preview = self.preview_room(previous_url)
+            previous = backups[-1].get("previous_full_url")
+            preview = self.preview_room(previous)
+            self.pending_rollback_url = previous
             self._set_room_url(preview["full_url"])
-            # Remove the backup only after the set operation succeeds.
-            remaining = backups[:-1]
-            self._save_backups(remaining)
-            try:
-                active_after = self.refresh_active_room().get("active_room")
-            except Exception:
-                active_after = {
-                    "full_url": preview["full_url"],
-                    "hash": preview["hash"],
-                    "checked_at": now_iso(),
-                    "verified": False,
-                }
-                with self.state_lock:
-                    self.state.active_room_url = preview["full_url"]
-                    self.state.active_room_checked_at = active_after["checked_at"]
-            return {
-                "ok": True,
-                "message": "Previous channel restored",
-                "active_room": active_after,
-                "backups": remaining,
-            }
+            active = self._verify_after_apply(preview["full_url"])
+            return {"ok": True, "message": "Verified" if active["verified"] else "Applied / verification pending",
+                    "active_room": active, "backups": self._load_backups()}
         finally:
             self.room_operation_lock.release()
 
@@ -571,8 +631,10 @@ class ThreadedJSONServer(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
     def __init__(self, server_address, handler_cls, manager: UpstreamManager):
+        host = loopback_host(server_address[0])
+        self.address_family = socket.AF_INET6 if ":" in host else socket.AF_INET
         self.manager = manager
-        super().__init__(server_address, handler_cls)
+        super().__init__((host, server_address[1]), handler_cls)
 
 
 class JSONHandler(socketserver.StreamRequestHandler):
@@ -638,8 +700,8 @@ class JSONHandler(socketserver.StreamRequestHandler):
             else:
                 self._send({"type": "error", "ok": False, "error": f"unknown command: {typ}"})
         except Exception as exc:
-            LOGGER.exception("Proxy command failed: %s", typ)
-            self._send({"type": "error", "ok": False, "error": str(exc)})
+            LOGGER.warning("Proxy command failed: %s (%s)", typ, type(exc).__name__)
+            self._send({"type": "error", "ok": False, "error": "Command failed: " + type(exc).__name__})
 
     def _send(self, payload: dict[str, Any]) -> None:
         try:
@@ -665,7 +727,7 @@ def main() -> None:
     manager = UpstreamManager(config=config, state=state, store=store)
     manager.start()
 
-    host = str(config["proxy"].get("host", "127.0.0.1"))
+    host = loopback_host(config["proxy"].get("host", "127.0.0.1"))
     port = int(config["proxy"]["port"])
     server = ThreadedJSONServer((host, port), JSONHandler, manager)
     LOGGER.info("Proxy ready on %s:%s", host, port)

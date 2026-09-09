@@ -27,6 +27,8 @@ if [[ ! -r "$CFG" ]]; then
   exit 1
 fi
 
+cd "$BASE_DIR"
+
 PROXY_PID=""
 WEB_PID=""
 cleanup() {
@@ -58,13 +60,13 @@ for _ in $(seq 1 30); do
   fi
   if "$PY" - "$CFG" <<'PY'
 import json, socket, sys
+from security import loopback_host
 cfg_path = sys.argv[1]
 with open(cfg_path, "r", encoding="utf-8") as f:
     cfg = json.load(f)
 host = str(cfg.get("proxy", {}).get("host", "127.0.0.1"))
 port = int(cfg.get("proxy", {}).get("port", 4404))
-if host in {"0.0.0.0", "::"}:
-    host = "127.0.0.1"
+host = loopback_host(host)
 try:
     with socket.create_connection((host, port), timeout=1.0) as s:
         s.sendall(b'{"type":"ping"}\n')

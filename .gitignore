@@ -74,3 +74,6 @@ htmlcov/
 
 # Optional local config overrides
 app_config.local.json
+
+# Pending verification contains channel secrets
+channel_verification.json

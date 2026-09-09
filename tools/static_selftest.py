@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-VERSION = "0.7.4-beta"
+VERSION = "0.7.5-beta"
 
 
 def require(condition: bool, message: str) -> None:
@@ -15,7 +15,7 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(f"FAIL: {message}")
 
 
-for path in (BASE / "app.py", BASE / "proxy" / "main.py"):
+for path in (BASE / "app.py", BASE / "security.py", BASE / "proxy" / "main.py"):
     py_compile.compile(str(path), doraise=True)
 
 cfg = json.loads((BASE / "app_config.example.json").read_text(encoding="utf-8"))
@@ -30,7 +30,7 @@ require("nav-channels" in html and "tab-channels" in html, "Channels tab missing
 require("Paste channel URL / hash" in html, "Channel URL field missing")
 require("previewRoomBtn" in html and "/api/rooms/preview" in app, "Channel preview workflow missing")
 require('"type": "snapshot"' in app and 'typ == "snapshot"' in proxy, "Consolidated snapshot path missing")
-require("node.setURL(url)" in proxy and "node.getURL" in proxy, "Direct Meshtastic channel API missing")
+require("node.setURL(url)" in proxy and "node._sendAdmin" in proxy and "get_channel_request" in proxy, "Direct Meshtastic channel API missing")
 require("subprocess" not in proxy, "Proxy still uses subprocess/CLI")
 require("wait -n" in start, "Child-process supervision missing")
 require("cfg.get(\"proxy\"" in start, "Startup proxy check is not config-driven")

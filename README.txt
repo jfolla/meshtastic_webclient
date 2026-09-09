@@ -1,7 +1,5 @@
 # Meshtastic Web Chat — v0.7.5-beta
 
-[Scarica lo ZIP v0.7.5-beta pronto per l’aggiornamento](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/beta/v0.7.5-beta/downloads/meshtastic_webchat_v0.7.5_beta_optimized.zip)
-
 Interfaccia Flask con schede Chat, Channels, Address Book, Nodes, Config e Debug.
 Un proxy locale mantiene la connessione seriale o TCP con il nodo Meshtastic.
 
