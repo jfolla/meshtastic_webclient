@@ -1,5 +1,9 @@
 # Meshtastic Web Chat
 
+> **Ultima beta disponibile: v0.7.5-beta** — [Scarica lo ZIP pronto](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/beta/v0.7.5-beta/downloads/meshtastic_webchat_v0.7.5_beta_optimized.zip) · [Sorgenti e istruzioni della v0.7.5-beta](https://github.com/jfolla/meshtastic_webclient/tree/beta/v0.7.5-beta)
+>
+> La v0.7.5-beta è pubblicata nel branch `beta/v0.7.5-beta`. Il codice e la documentazione qui sotto si riferiscono al branch `main`, ancora alla v0.7.4-beta.
+
 **Version:** v0.7.4-beta  
 **Status:** Level B beta  
 **Internal folder:** `meshtastic_webchat`  
