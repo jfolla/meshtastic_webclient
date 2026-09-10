@@ -17,9 +17,10 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
-from flask import Flask, jsonify, render_template, request, send_file
+from auth import AccessControl
+from flask import g, Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.7.5-beta"
+VERSION = "0.7.6-beta"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"
@@ -29,6 +30,7 @@ MAX_PROXY_RESPONSE = 4 * 1024 * 1024
 
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.config["MAX_CONTENT_LENGTH"] = 512 * 1024
+access_control = AccessControl(app)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("meshtastic_webchat")
 
@@ -99,6 +101,10 @@ def validate_config(cfg: Any) -> None:
         if not isinstance(cfg.get(section), dict):
             raise ValueError(f"Missing or invalid '{section}' section")
 
+    auth_cfg = cfg.get("auth", {})
+    if not isinstance(auth_cfg, dict) or type(auth_cfg.get("secure_cookie", True)) is not bool:
+        raise ValueError("auth.secure_cookie must be a boolean")
+
     node = cfg["node"]
     mode = str(node.get("mode", "")).lower()
     if mode not in {"serial", "tcp"}:
@@ -141,6 +147,10 @@ def init_db() -> None:
             """
         )
         columns = {row[1] for row in conn.execute("PRAGMA table_info(messages)")}
+        for name, declaration in {'packet_id':'INTEGER', 'delivery_status':"TEXT DEFAULT ''",
+                                  'delivery_error':"TEXT DEFAULT ''"}.items():
+            if name not in columns:
+                conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {declaration}")
         if "proxy_id" not in columns:
             conn.execute("ALTER TABLE messages ADD COLUMN proxy_id INTEGER")
         conn.execute(
@@ -258,8 +268,6 @@ def db_add_proxy_messages(messages: list[dict[str, Any]]) -> None:
             "SELECT proxy_id FROM messages WHERE proxy_id IN (%s)" % ','.join('?' for _ in rows),
             [r[5] for r in rows])}
         new_rows = [row for row in rows if row[5] not in known]
-        if not new_rows:
-            return
         if conn.execute("SELECT 1 FROM messages WHERE proxy_id IS NULL LIMIT 1").fetchone():
             for row in new_rows:
                 conn.execute("""UPDATE messages SET proxy_id = ? WHERE id = (
@@ -269,6 +277,13 @@ def db_add_proxy_messages(messages: list[dict[str, Any]]) -> None:
                     ORDER BY id DESC LIMIT 1)""", (row[5], *row[:5]))
         conn.executemany("INSERT OR IGNORE INTO messages "
                          "(ts, direction, from_id, to_id, text, proxy_id) VALUES (?, ?, ?, ?, ?, ?)", new_rows)
+        for msg in messages:
+            if not isinstance(msg, dict) or type(msg.get('id')) is not int:
+                continue
+            values = (msg.get('packet_id'), msg.get('delivery_status') or '', msg.get('delivery_error') or '')
+            conn.execute("UPDATE messages SET packet_id=?,delivery_status=?,delivery_error=? "
+                         "WHERE proxy_id=? AND (packet_id IS NOT ? OR delivery_status IS NOT ? OR delivery_error IS NOT ?)",
+                         (*values,msg['id'],*values))
         conn.execute("DELETE FROM messages WHERE id < COALESCE("
                      "(SELECT id FROM messages ORDER BY id DESC LIMIT 1 OFFSET 9999), 0)")
 
@@ -285,12 +300,12 @@ def db_list_messages(limit: int = 100) -> list[dict[str, Any]]:
     with store_lock, closing(sqlite3.connect(DB_PATH, timeout=10)) as conn, conn:
         conn.execute("PRAGMA busy_timeout=5000")
         rows = conn.execute(
-            "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
+            "SELECT id, ts, direction, from_id, to_id, text, packet_id, delivery_status, delivery_error FROM messages ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
     rows.reverse()
     return [
-        decorate_message({"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5]})
+        decorate_message({"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5], "packet_id": r[6], "delivery_status": r[7], "delivery_error": r[8]})
         for r in rows
     ]
 
@@ -423,7 +438,7 @@ def harden_response(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html", version=VERSION)
+    return render_template("index.html", version=VERSION, auth=g.auth)
 
 
 @app.route("/api/snapshot")
@@ -704,6 +719,7 @@ def main() -> None:
     global config_path_runtime
     config_path_runtime = Path(args.config).resolve()
     cfg = load_config(config_path_runtime)
+    access_control.configure(secure=cfg.get("auth", {}).get("secure_cookie", True))
 
     proxy_host = str(cfg["proxy"].get("host", "127.0.0.1"))
     proxy_port = int(cfg["proxy"]["port"])

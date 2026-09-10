@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.7.6-beta
+
+- Added mandatory login with local admin/viewer accounts and scrypt password hashes.
+- Added expiring server-side sessions, logout, CSRF checks, secure cookies and login throttling.
+- Enforced read-only permissions on API mutations and device refreshes.
+- Added outgoing delivery status, recipient ACK correlation, NAK handling and confirmation timeouts.
+- Kept broadcast delivery explicitly unconfirmed and preserved status changes in SQLite batches.
+- Added account setup instructions and 10 auth/delivery tests, for 22 regression tests total.
+- UI, messages, documentation and upgrade package remain in English.
+
 ## v0.7.5-beta
 
 - Batch SQLite synchronization with deduplication and retention of 10,000 messages.
@@ -50,4 +60,5 @@
 ## v0.6.9
 
 - Added tabbed UI layout and initial Channels tab integration.
+
 

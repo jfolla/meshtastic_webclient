@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-VERSION = "0.7.5-beta"
+VERSION = "0.7.6-beta"
 
 
 def require(condition: bool, message: str) -> None:
@@ -15,7 +15,7 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(f"FAIL: {message}")
 
 
-for path in (BASE / "app.py", BASE / "security.py", BASE / "proxy" / "main.py"):
+for path in (BASE / "app.py", BASE / "security.py", BASE / "auth.py", BASE / "proxy" / "main.py"):
     py_compile.compile(str(path), doraise=True)
 
 cfg = json.loads((BASE / "app_config.example.json").read_text(encoding="utf-8"))

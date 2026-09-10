@@ -1,0 +1,8 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Sign in · Meshtastic Web Chat</title>
+<style>body{background:#0b1220;color:#e6edf7;font:16px system-ui;display:grid;place-items:center;min-height:100vh;margin:0}main{width:min(360px,85vw);padding:28px;background:#152033;border-radius:18px}h1{font-size:24px}label{display:block;margin-top:16px}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:7px;border-radius:8px;border:1px solid #53647d}button{background:#63c8ff;color:#081324;font-weight:700;margin-top:22px;cursor:pointer}.error{color:#ffb0b0}p{line-height:1.5;color:#b8c6da}</style></head>
+<body><main><h1>Meshtastic Web Chat</h1>
+{% if setup_required %}<p>No accounts have been configured. Ask the server administrator to create an account using the account setup command in the README.</p>
+{% else %}<p>Sign in to access your radio.</p>{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form action="/login" method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><label>Username<input name="username" autocomplete="username" maxlength="80" required></label><label>Password<input type="password" name="password" autocomplete="current-password" maxlength="1024" required></label><button type="submit">Sign in</button></form>{% endif %}
+</main></body></html>

@@ -91,7 +91,7 @@
         <h1>Meshtastic Web Chat</h1>
         <p>Proxy-first client · v{{ version }}</p>
       </div>
-      <div class="statusbar">
+      <div class="statusbar"><span>{{ auth.user }} · {{ auth.role }}</span><button id="logoutBtn" class="secondary smallbtn">Sign out</button>
         <span class="pill" id="proxyPill"><span class="dot"></span><span>Proxy: unknown</span></span>
         <span class="pill" id="backendPill"><span class="dot"></span><span>Node: unknown</span></span>
       </div>
@@ -247,6 +247,8 @@
     let currentRooms = [];
     let currentSnapshot = null;
     let refreshInFlight = null;
+    const csrfToken = {{ auth.csrf | tojson }};
+    const readOnly = {{ (auth.role != 'admin') | tojson }};
     let lastMessagesSignature = '';
     let toastTimer = null;
 
@@ -263,7 +265,8 @@
     }
 
     async function getJson(url, opts = {}) {
-      const res = await fetch(url, { cache:'no-store', ...opts });
+      const res = await fetch(url, { cache:'no-store', ...opts, headers:{...opts.headers, 'X-CSRF-Token':csrfToken} });
+      if (res.status === 401) { window.location.assign('/login'); throw new Error('Session expired'); }
       const contentType = res.headers.get('content-type') || '';
       let data = null;
       try { data = contentType.includes('application/json') ? await res.json() : { error: await res.text() }; }
@@ -359,7 +362,7 @@
     }
 
     function renderMessages(items) {
-      const signature = JSON.stringify((items || []).map(m => [m.id,m.from_label,m.to_label,m.text]));
+      const signature = JSON.stringify((items || []).map(m => [m.id,m.from_label,m.to_label,m.text,m.delivery_status,m.delivery_error]));
       if (signature === lastMessagesSignature) return;
       lastMessagesSignature = signature;
       const box = document.getElementById('messages');
@@ -374,7 +377,9 @@
         const toLabel = m.to_label || m.to_id || '';
         const fromMeta = !isSelf && m.from_id && m.from_id !== fromLabel ? ` (${m.from_id})` : '';
         const toMeta = m.to_id && m.to_id !== toLabel ? ` (${m.to_id})` : '';
-        return `<div class="bubble ${m.direction === 'out' ? 'out' : ''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel + fromMeta)} → ${esc(toLabel + toMeta)}</div><div class="text">${esc(m.text || '')}</div></div>`;
+        const deliveryLabels = {sending:'Sending to radio', pending_ack:'Sent to radio · awaiting ACK', acknowledged:'Recipient ACK received', no_confirmation:'No confirmation', failed:'Send failed', broadcast_sent:'Broadcast sent · delivery unconfirmed'};
+        const delivery = m.direction === 'out' ? (deliveryLabels[m.delivery_status] || 'Delivery status unavailable') : '';
+        return `<div class="bubble ${m.direction === 'out' ? 'out' : ''}"><div class="meta">${esc(m.ts)} · ${esc(fromLabel + fromMeta)} → ${esc(toLabel + toMeta)}${delivery ? ` · ${esc(delivery)}${m.delivery_error ? ` (${esc(m.delivery_error)})` : ''}` : ''}</div><div class="text">${esc(m.text || '')}</div></div>`;
       }).join('');
       if (nearBottom || !box.dataset.initialized) box.scrollTop = box.scrollHeight;
       box.dataset.initialized = '1';
@@ -597,6 +602,15 @@
       await refreshAll(true);
     }
 
+    function enforceReadOnly() {
+      if (!readOnly) return;
+      document.querySelectorAll('.composer input, .composer select, .composer button, #tab-channels button, #tab-channels input, #tab-addressbook button, #tab-addressbook input, [data-action], #exportCfgBtn, #importCfgInput, #clearBtn').forEach(el => { el.disabled = true; el.title = 'Read-only account'; });
+    }
+    document.getElementById('logoutBtn').addEventListener('click', async () => {
+      await getJson('/logout', {method:'POST'}); window.location.assign('/login');
+    });
+    enforceReadOnly();
+
     function applySnapshot(snapshot) {
       currentSnapshot = snapshot;
       const status = snapshot.status || {};
@@ -615,6 +629,7 @@
       renderRecipientOptions(nodes, addressBook);
       renderStats(status, state, messages, addressBook.length, rooms.length);
       renderActiveRoom(snapshot.active_room || null);
+      enforceReadOnly();
       document.getElementById('debugOutput').textContent = JSON.stringify({version:snapshot.version,status,state,active_room:snapshot.active_room,debug:snapshot.debug}, null, 2);
     }
 

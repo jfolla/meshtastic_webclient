@@ -83,6 +83,14 @@ class MessageStore:
                 )
                 """
             )
+            columns = {r[1] for r in conn.execute("PRAGMA table_info(messages)")}
+            for name, declaration in {'packet_id':'INTEGER', 'delivery_status':"TEXT DEFAULT ''",
+                                      'delivery_error':"TEXT DEFAULT ''", 'ack_deadline':'REAL'}.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE messages ADD COLUMN {name} {declaration}")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_proxy_packet_id ON messages(packet_id)")
+            # A restarted process cannot retain callbacks for earlier sends.
+            conn.execute("UPDATE messages SET delivery_status='no_confirmation' WHERE delivery_status IN ('sending','pending_ack')")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_proxy_messages_id_desc ON messages(id DESC)")
 
             conn.execute("UPDATE messages SET raw_json = NULL WHERE raw_json IS NOT NULL")
@@ -109,15 +117,41 @@ class MessageStore:
             limit = 100
         limit = max(1, min(limit, 500))
         with self.lock, closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE messages SET delivery_status='no_confirmation' WHERE delivery_status='pending_ack' AND ack_deadline <= ?", (time.time(),))
             rows = conn.execute(
-                "SELECT id, ts, direction, from_id, to_id, text FROM messages ORDER BY id DESC LIMIT ?",
+                "SELECT id, ts, direction, from_id, to_id, text, packet_id, delivery_status, delivery_error FROM messages ORDER BY id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
         rows.reverse()
         return [
-            {"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5]}
+            {"id": r[0], "ts": r[1], "direction": r[2], "from_id": r[3], "to_id": r[4], "text": r[5], "packet_id": r[6], "delivery_status": r[7], "delivery_error": r[8]}
             for r in rows
         ]
+
+    def begin_send(self, destination, text):
+        with self.lock, closing(self._connect()) as conn, conn:
+            row = conn.execute("INSERT INTO messages (ts,direction,from_id,to_id,text,delivery_status) "
+                               "VALUES (?,'out','me',?,?,'sending')", (now_iso(),destination,text))
+            self._prune(conn)
+            return row.lastrowid
+
+    def sent(self, message_id, packet_id, direct):
+        with self.lock, closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE messages SET packet_id=?, ack_deadline=?, "
+                         "delivery_status=CASE WHEN delivery_status='sending' THEN ? ELSE delivery_status END WHERE id=?",
+                         (packet_id,time.time()+180,'pending_ack' if direct else 'broadcast_sent',message_id))
+
+    def delivery(self, message_id, status, error=''):
+        with self.lock, closing(self._connect()) as conn, conn:
+            conn.execute("UPDATE messages SET delivery_status=?, delivery_error=? WHERE id=? "
+                         "AND delivery_status IN ('sending','pending_ack','no_confirmation')",
+                         (status,error,message_id))
+
+    def pending_packet(self, packet_id):
+        with self.lock, closing(self._connect()) as conn, conn:
+            return conn.execute("SELECT id,to_id FROM messages WHERE packet_id=? AND direction='out' "
+                                "AND delivery_status IN ('pending_ack','no_confirmation') ORDER BY id DESC LIMIT 1",
+                                (packet_id,)).fetchone()
 
     def clear(self) -> None:
         with self.lock, closing(self._connect()) as conn, conn:
@@ -210,6 +244,13 @@ class UpstreamManager:
             self.state.last_packet_at = now_iso()
 
     def on_receive(self, packet, interface=None) -> None:
+        if interface is not self.iface:
+            return
+        decoded = packet.get('decoded', {})
+        if 'routing' in decoded and decoded.get('requestId'):
+            pending = self.store.pending_packet(decoded['requestId'])
+            if pending:
+                self._delivery_response(pending[0], pending[1], packet)
         relay_node = packet.get("relayNode")
         hop_start = packet.get("hopStart")
         hop_limit = packet.get("hopLimit")
@@ -332,22 +373,51 @@ class UpstreamManager:
                         self.state.last_error = str(exc)
             self.stop_event.wait(5.0)
 
-    def send_text(self, text: str, destination_id: Optional[str] = None) -> None:
+    def _delivery_response(self, message_id, destination, packet):
+        routing = packet.get('decoded', {}).get('routing')
+        if routing is None:
+            return
+        try:
+            target = int(destination[1:], 16) if destination.startswith('!') else int(destination)
+            sender = int(packet.get('from', -1))
+        except (TypeError, ValueError, AttributeError):
+            return
+        reason = routing.get('errorReason', 'NONE')
+        if reason in ('NONE', 0):
+            # Local/implicit ACK is not a recipient delivery confirmation.
+            if sender == target:
+                self.store.delivery(message_id, 'acknowledged')
+        else:
+            self.store.delivery(message_id, 'failed', str(reason))
+
+    def send_text(self, text: str, destination_id: Optional[str] = None) -> dict[str, Any]:
         with self.iface_lock:
             iface = self.iface
         if iface is None:
             raise RuntimeError("Upstream not connected")
-        kwargs: dict[str, Any] = {
-            "text": text,
-            "wantAck": False,
-            "channelIndex": int(self.config["node"].get("channel", 0)),
-        }
-        if destination_id:
-            kwargs["destinationId"] = destination_id
-        iface.sendText(**kwargs)
-        self.store.add("out", "io", destination_id or "^all", text)
+        destination = destination_id or '^all'
+        direct = destination not in ('^all', '!ffffffff', '4294967295')
+        if direct:
+            try:
+                number = int(destination[1:],16) if destination.startswith('!') else int(destination)
+                if not 0 < number < 4294967295:
+                    raise ValueError
+            except ValueError:
+                raise ValueError('Destination must be a node ID or broadcast')
+        message_id = self.store.begin_send(destination, text)
+        def onAckNak(packet):
+            self._delivery_response(message_id, destination, packet)
+        try:
+            packet = iface.sendText(text=text, destinationId=destination, wantAck=direct,
+                                    onResponse=onAckNak if direct else None,
+                                    channelIndex=int(self.config['node'].get('channel',0)))
+            self.store.sent(message_id, int(packet.id), direct)
+        except Exception:
+            self.store.delivery(message_id, 'failed', 'LOCAL_SEND_ERROR')
+            raise
         with self.state_lock:
             self.state.messages_tx += 1
+        return {'message_id':message_id, 'packet_id':int(packet.id)}
 
     def get_state(self) -> dict[str, Any]:
         with self.state_lock:
@@ -681,8 +751,8 @@ class JSONHandler(socketserver.StreamRequestHandler):
                 if not text:
                     self._send({"type": "error", "ok": False, "error": "empty text"})
                 else:
-                    manager.send_text(text=text, destination_id=msg.get("dest"))
-                    self._send({"type": "ack", "ok": True})
+                    result = manager.send_text(text=text, destination_id=msg.get("dest"))
+                    self._send({"type": "ack", "ok": True, **result})
             elif typ == "debug":
                 self._send({"type": "debug", "ok": True, "state": manager.get_state()})
             elif typ == "room_preview":

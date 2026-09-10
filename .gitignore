@@ -77,3 +77,7 @@ app_config.local.json
 
 # Pending verification contains channel secrets
 channel_verification.json
+
+# Local account password hashes
+auth.json
+.auth.*.tmp

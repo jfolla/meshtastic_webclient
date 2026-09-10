@@ -15,6 +15,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import app
 from proxy import main as proxy
 from security import loopback_host
+from werkzeug.security import generate_password_hash
+
+TEST_HASH = generate_password_hash("test-password-123")
+
+def login_client(role="admin"):
+    client = app.app.test_client()
+    account = {"role":role, "password_hash":TEST_HASH}
+    app.access_control.path.write_text(json.dumps({"users":{"tester":account}}))
+    with app.app.test_request_context():
+        sid, entry = app.access_control.new_session("tester", account)
+    client.set_cookie("webchat_session", sid)
+    client.environ_base["HTTP_X_CSRF_TOKEN"] = entry["csrf"]
+    return client
+
 
 
 def channel_url(name='Test', count=1):
@@ -83,6 +97,7 @@ class Regressions(unittest.TestCase):
         self.db = patch.object(app, 'DB_PATH', self.path/'web.db')
         self.db.start()
         app.init_db()
+        app.access_control.configure(self.path/"auth.json", secure=False)
 
     def tearDown(self):
         self.db.stop(); self.backups.stop(); self.verification.stop(); self.tmp.cleanup()
@@ -166,7 +181,7 @@ class Regressions(unittest.TestCase):
         with patch.object(app, 'rooms_cache', [room]), patch.dict(app.proxy_cache, {
             'active_room':room, 'backups':[{'previous_full_url':url}],
             'state':{'active_room_url':url}, 'debug':{'nested':{'psk':'private-test-key!', 'full_url':url}}}):
-            client = app.app.test_client()
+            client = login_client()
             for endpoint in ['/api/snapshot','/api/rooms','/api/rooms/active','/api/rooms/backups','/api/state','/api/debug']:
                 response = client.get(endpoint)
                 self.assertEqual(response.status_code,200)
