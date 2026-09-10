@@ -20,7 +20,7 @@ from urllib.parse import urlparse
 from auth import AccessControl
 from flask import g, Flask, jsonify, render_template, request, send_file
 
-VERSION = "0.7.6-beta"
+VERSION = "0.7.7-beta"
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = BASE_DIR / "webchat_cache.db"
 CONFIG_PATH = BASE_DIR / "app_config.json"

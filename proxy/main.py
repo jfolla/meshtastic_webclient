@@ -9,6 +9,7 @@ import base64
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import socketserver
@@ -54,6 +55,10 @@ def atomic_save_json(path: Path, payload: Any, mode: int = 0o600) -> None:
         os.fsync(handle.fileno())
     os.chmod(tmp, mode)
     os.replace(tmp, path)
+
+
+class SendValidationError(ValueError):
+    """Safe, user-facing send validation errors without channel secrets."""
 
 
 class MessageStore:
@@ -390,27 +395,55 @@ class UpstreamManager:
         else:
             self.store.delivery(message_id, 'failed', str(reason))
 
+    @staticmethod
+    def _resolve_destination(value, iface):
+        raw = str(value if value is not None else '').strip()
+        if not raw or raw.lower() == '^all':
+            return '^all', 0xffffffff, False
+        # Node database keys are authoritative, including legacy/custom IDs.
+        known = (getattr(iface, 'nodes', None) or {}).get(raw)
+        candidate = known.get('num') if isinstance(known, dict) else None
+        if candidate is None and isinstance(known, dict):
+            candidate = known.get('user', {}).get('id')
+        raw = str(candidate if candidate is not None else raw).strip()
+        try:
+            if re.fullmatch(r'![0-9a-fA-F]{1,8}', raw):
+                number = int(raw[1:], 16)
+            elif re.fullmatch(r'0[xX][0-9a-fA-F]{1,8}', raw):
+                number = int(raw[2:], 16)
+            elif re.fullmatch(r'[0-9]+', raw):
+                number = int(raw, 10)
+            elif re.fullmatch(r'[0-9a-fA-F]{8}', raw):
+                number = int(raw, 16)
+            else:
+                raise ValueError
+            if not 0 < number <= 0xffffffff:
+                raise ValueError
+        except (ValueError, TypeError):
+            raise SendValidationError('Invalid recipient. Select a node or use its !xxxxxxxx node ID. Channel names are not recipients.') from None
+        if number == 0xffffffff:
+            return '^all', number, False
+        return f'!{number:08x}', number, True
+
     def send_text(self, text: str, destination_id: Optional[str] = None) -> dict[str, Any]:
         with self.iface_lock:
             iface = self.iface
         if iface is None:
             raise RuntimeError("Upstream not connected")
-        destination = destination_id or '^all'
-        direct = destination not in ('^all', '!ffffffff', '4294967295')
-        if direct:
-            try:
-                number = int(destination[1:],16) if destination.startswith('!') else int(destination)
-                if not 0 < number < 4294967295:
-                    raise ValueError
-            except ValueError:
-                raise ValueError('Destination must be a node ID or broadcast')
+        destination, destination_num, direct = self._resolve_destination(destination_id, iface)
+        try:
+            channel_index = int(self.config['node'].get('channel', 0))
+            if not 0 <= channel_index <= 7:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise SendValidationError('Invalid radio channel index. Set node.channel to an integer from 0 to 7 in app_config.json.') from None
         message_id = self.store.begin_send(destination, text)
         def onAckNak(packet):
             self._delivery_response(message_id, destination, packet)
         try:
-            packet = iface.sendText(text=text, destinationId=destination, wantAck=direct,
+            packet = iface.sendText(text=text, destinationId=destination_num, wantAck=direct,
                                     onResponse=onAckNak if direct else None,
-                                    channelIndex=int(self.config['node'].get('channel',0)))
+                                    channelIndex=channel_index)
             self.store.sent(message_id, int(packet.id), direct)
         except Exception:
             self.store.delivery(message_id, 'failed', 'LOCAL_SEND_ERROR')
@@ -769,6 +802,8 @@ class JSONHandler(socketserver.StreamRequestHandler):
                 self._send(manager.list_backups())
             else:
                 self._send({"type": "error", "ok": False, "error": f"unknown command: {typ}"})
+        except SendValidationError as exc:
+            self._send({"type": "error", "ok": False, "error": str(exc)})
         except Exception as exc:
             LOGGER.warning("Proxy command failed: %s (%s)", typ, type(exc).__name__)
             self._send({"type": "error", "ok": False, "error": "Command failed: " + type(exc).__name__})

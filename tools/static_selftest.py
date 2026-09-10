@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-VERSION = "0.7.6-beta"
+VERSION = "0.7.7-beta"
 
 
 def require(condition: bool, message: str) -> None:

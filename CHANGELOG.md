@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.7-beta
+
+- Normalize direct recipients to numeric node IDs before Meshtastic sends.
+- Support explicit hexadecimal IDs, decimal numbers and known node database keys.
+- Validate channel indices and return actionable send validation errors.
+- Clarify that Send to selects a node, not a radio channel.
+- Pass 26 regression tests, including real library recipient conversion.
+
 ## v0.7.6-beta
 
 - Added mandatory login with local admin/viewer accounts and scrypt password hashes.
