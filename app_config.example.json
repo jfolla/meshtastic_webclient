@@ -1,5 +1,5 @@
 {
-  "version": "0.7.7-beta",
+  "version": "0.7.8-beta",
   "node": {
     "mode": "serial",
     "host": "",
@@ -22,3 +22,4 @@
     "secure_cookie": true
   }
 }
+

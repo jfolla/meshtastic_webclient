@@ -7,7 +7,7 @@ import re
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent.parent
-VERSION = "0.7.7-beta"
+VERSION = "0.7.8-beta"
 
 
 def require(condition: bool, message: str) -> None:
@@ -36,3 +36,4 @@ require("wait -n" in start, "Child-process supervision missing")
 require("cfg.get(\"proxy\"" in start, "Startup proxy check is not config-driven")
 require(not re.search(r"datetime\.utcnow\s*\(", app + proxy), "Deprecated datetime.utcnow() found")
 print(f"OK: static self-test passed for {VERSION}")
+

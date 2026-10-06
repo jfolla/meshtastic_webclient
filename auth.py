@@ -85,6 +85,11 @@ class AccessControl:
     def guard(self):
         if request.path == '/login':
             return None
+        if request.path == '/favicon.ico':
+            return '', 204
+        # Missing assets must not redirect to login or change its session.
+        if request.endpoint is None or request.endpoint == 'static':
+            return None
         entry = self.session()
         if not entry or not entry.get('user'):
             if request.path.startswith('/api/'):
@@ -113,6 +118,11 @@ class AccessControl:
         if not users:
             return render_template('login.html', setup_required=True), 503
         if request.method == 'GET':
+            entry = self.session()
+            if entry and entry.get('user'):
+                return redirect('/')
+            if entry:
+                return render_template('login.html', csrf=entry['csrf'])
             sid, entry = self.new_session()
             return self.set_cookie(self.app.make_response(render_template('login.html', csrf=entry['csrf'])), sid)
         entry = self.session()
@@ -120,7 +130,15 @@ class AccessControl:
         if origin and urlparse(origin).netloc != request.host:
             return jsonify(ok=False, error='Cross-origin request rejected'), 403
         if not entry or not secrets.compare_digest(request.form.get('csrf',''), entry['csrf']):
-            return render_template('login.html', error='Login expired. Reload this page.', csrf=''), 403
+            # Reject this submission, but return a usable form for the next try.
+            # A mismatch must not invalidate other open login tabs.
+            if entry and not entry.get('user'):
+                return render_template('login.html', error='Login expired. Please sign in again.', csrf=entry['csrf']), 403
+            if entry and entry.get('user'):
+                return redirect('/')
+            sid, fresh = self.new_session()
+            response = self.app.make_response((render_template('login.html', error='Login expired. Please sign in again.', csrf=fresh['csrf']), 403))
+            return self.set_cookie(response, sid)
         now = time.monotonic()
         ip = request.remote_addr or 'unknown'
         with self.lock:
@@ -181,3 +199,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+

@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.8-beta
+
+- Prevent favicon and missing-asset requests from invalidating login sessions.
+- Reuse the login session across tabs and preserve authenticated sessions.
+- Return a fresh usable form after expiry while rejecting invalid CSRF submissions.
+- Add six focused regression tests for login recovery.
+
 ## v0.7.7-beta
 
 - Normalize direct recipients to numeric node IDs before Meshtastic sends.
@@ -68,5 +75,6 @@
 ## v0.6.9
 
 - Added tabbed UI layout and initial Channels tab integration.
+
 
 

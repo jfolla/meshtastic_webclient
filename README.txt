@@ -1,16 +1,27 @@
 # Meshtastic Web Chat
 
-**Version:** v0.7.7-beta  
+**Version:** v0.7.8-beta  
 **Status:** Beta  
 **Current branch:** `main`  
 **Application folder:** `meshtastic_webchat`  
 **systemd service:** `meshtastic-webchat.service`
 
-[Download the v0.7.7-beta upgrade ZIP](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/main/downloads/meshtastic_webchat_v0.7.7_beta_optimized.zip)
+[Download the v0.7.8-beta upgrade ZIP](https://github.com/jfolla/meshtastic_webclient/raw/refs/heads/main/downloads/meshtastic_webchat_v0.7.8_beta_optimized.zip)
 
 A Flask interface with Chat, Channels, Address Book, Nodes, Config and Debug tabs.
 A local proxy maintains the serial or TCP connection to the Meshtastic node.
 The interface, application messages and documentation are in English.
+
+## Changes in v0.7.8-beta
+
+- Fixed login forms being invalidated by favicon requests, missing assets or another
+  login tab. Missing resources now retain their normal HTTP status and do not redirect
+  to login; favicon requests return HTTP 204.
+- Existing anonymous sessions are reused when reopening login. Authenticated users
+  visiting login are redirected to the application without losing their session.
+- Expired or invalid submissions remain rejected with HTTP 403, but the response
+  includes a usable form token so signing in again can succeed without a reload loop.
+- Added six focused login recovery tests. Account files and passwords are unchanged.
 
 ## Changes in v0.7.7-beta
 
@@ -112,11 +123,11 @@ Run these commands on the server, with the downloaded ZIP in the current directo
 
 ```bash
 sudo systemctl stop meshtastic-webchat
-sudo tar -czf /home/meshtastic/meshtastic_webchat_pre_v0.7.7_backup.tar.gz \
+sudo tar -czf /home/meshtastic/meshtastic_webchat_pre_v0.7.8_backup.tar.gz \
   --exclude=meshtastic_webchat/.venv \
   -C /home/meshtastic meshtastic_webchat
-sudo chmod 600 /home/meshtastic/meshtastic_webchat_pre_v0.7.7_backup.tar.gz
-sudo unzip -o meshtastic_webchat_v0.7.7_beta_optimized.zip -d /home/meshtastic
+sudo chmod 600 /home/meshtastic/meshtastic_webchat_pre_v0.7.8_backup.tar.gz
+sudo unzip -o meshtastic_webchat_v0.7.8_beta_optimized.zip -d /home/meshtastic
 sudo chown -R meshtastic:meshtastic /home/meshtastic/meshtastic_webchat
 sudo chmod +x /home/meshtastic/meshtastic_webchat/start_webchat.sh
 ```
@@ -134,7 +145,7 @@ sudo systemctl start meshtastic-webchat
 journalctl -u meshtastic-webchat -n 50 --no-pager
 ```
 
-Reload the browser with Ctrl+F5. The UI should display `0.7.7-beta`.
+Reload the browser with Ctrl+F5. The UI should display `0.7.8-beta`.
 The upgrade backup also contains channel secrets.
 
 ## First installation
@@ -191,4 +202,5 @@ The Config tab manages only `app_config.json`, not a complete radio backup.
 - `proxy_messages.db`, `webchat_cache.db`: the latest 10,000 messages in each database.
 
 JSON writes are atomic with mode 0600. Runtime files are excluded from the ZIP.
-v0.7.7-beta is the current version published on `main`.
+v0.7.8-beta is the current version published on `main`.
+
